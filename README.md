@@ -1,17 +1,37 @@
 # tj-scan
 Scan GitHub Workflow logs for IOCs from the tj-actions/changed-files breach.
 
-This script will scan either an organization's or a repository's Workflow run logs for IOCs (double base64-encoded strings) and will attempt to decode them.
-
-This script was adapated from a mess of Python code that was built to scan the entirety of GitHub so there may be quirks or bugs.
-
-Since Workflows may no longer use the Action, this script just lists all Workflows and searches the logs during the period of time when the Action was compromised.
+Notes:
+- This script should not be seen as a universal detector of compromise; rather, a single result likely indicates that other Workflow runs in the search window were also compromised
+- This script will scan either an organization's or a repository's Workflow run logs for IOCs (double base64-encoded strings) and will attempt to decode them
+- This script was adapated from a mess of Python code that was built to scan the entirety of GitHub so there may be quirks or bugs
+- Since Workflows may no longer use the Action, this script just lists all Workflows and searches the logs during the period of time when the Action was compromised
+- This script is intended to be run using a short-lived GitHub Token from `octo-sts`
 
 ## Requirements
 
-- An `octo-sts` trust policy located in `.github/chainguard` that allows `actions:read` and `contents:read`
-    - For more information, check out the `octo-sts` [docs](https://github.com/octo-sts/app?tab=readme-ov-file#the-trust-policy)
-- [chainctl](https://edu.chainguard.dev/chainguard/administration/how-to-install-chainctl/) installed
+- [chainctl](https://edu.chainguard.dev/chainguard/administration/how-to-install-chainctl) installed to handle ephemeral authentication
+
+## Example `octo-sts` trust policy
+
+The ID required for the trust policy can be retrieved with:
+```sh
+$ chainctl auth status -o json | jq .identity | tr -d '"'
+```
+
+The policy can file will look something like this:
+```yaml
+issuer: https://issuer.enforce.dev
+# Use ONE of subject or subject_pattern
+subject: <ID from above>
+subject_pattern: (<ID from above>)
+claim_pattern:
+  email: ".*@domain.com"
+
+permissions:
+  actions: read
+  contents: read
+```
 
 ## Usage
 
@@ -33,18 +53,10 @@ Since Workflows may no longer use the Action, this script just lists all Workflo
 ```
 
 For example:
-`export GITHUB_TOKEN=$(chainctl auth octo-sts --identity ephemerality --scope chainguard-dev/tj-scan)`
-
-`go run cmd/tj-scan/main.go -token ${GITHUB_TOKEN} -target [org|owner/repo] -csv="final.csv" -json="final.json"`
-
--or-
-
-`make out/tjscan`
-
-then
-
-`./out/tjscan -token ${GITHUB_TOKEN} -target [org|owner/repo] -csv="final.csv" -json="final.json"`
+```sh
+$ chainctl auth octo-sts --scope chainguard-dev/tj-scan --identity ephemerality -- go run cmd/tj-scan/main.go -target owner/repo -json="final.json" -csv="final.csv"
+2025/03/18 11:27:59 INFO Found 1 repositories to scan
+2025/03/18 11:27:59 INFO No existing cache found at cache.json, starting fresh
+```
 
 Results will be saved in the `results/` directory.
-
-Note: `GITHUB_TOKEN=...` can also be used instead of `-token`.
