@@ -55,24 +55,3 @@ func LoadExistingCache(logger *clog.Logger, cacheFile string) tjscan.Cache {
 	logger.Infof("Loaded %d existing results from cache", len(cache.Results))
 	return cache
 }
-
-func WriteIntermediateResults(logger *clog.Logger, cacheFile string, results []tjscan.Result) {
-	cache := tjscan.Cache{Results: results}
-	cacheData, err := json.MarshalIndent(cache, "", "  ")
-	if err != nil {
-		logger.Errorf("Error marshaling intermediate results: %v", err)
-		return
-	}
-
-	tempFile := cacheFile + ".temp"
-	if err = os.WriteFile(tempFile, cacheData, 0o00); err != nil {
-		logger.Errorf("Error writing intermediate results: %v", err)
-		return
-	}
-
-	if err = os.Rename(tempFile, cacheFile); err != nil {
-		logger.Errorf("Error renaming intermediate results file: %v", err)
-	}
-
-	logger.Infof("Wrote intermediate results with %d entries", len(results))
-}

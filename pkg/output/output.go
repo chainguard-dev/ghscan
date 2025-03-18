@@ -63,6 +63,27 @@ func WriteCSV(filename string, results []tjscan.Result) error {
 	return nil
 }
 
+func WriteIntermediateResults(logger *clog.Logger, cacheFile string, results []tjscan.Result) {
+	cache := tjscan.Cache{Results: results}
+	cacheData, err := json.MarshalIndent(cache, "", "  ")
+	if err != nil {
+		logger.Errorf("Error marshaling intermediate results: %v", err)
+		return
+	}
+
+	tempFile := cacheFile + ".temp"
+	if err = os.WriteFile(tempFile, cacheData, 0o00); err != nil {
+		logger.Errorf("Error writing intermediate results: %v", err)
+		return
+	}
+
+	if err = os.Rename(tempFile, cacheFile); err != nil {
+		logger.Errorf("Error renaming intermediate results file: %v", err)
+	}
+
+	logger.Infof("Wrote intermediate results with %d entries", len(results))
+}
+
 func WriteOutputs(logger *clog.Logger, cache tjscan.Cache, cacheFile, jsonFile, csvFile string) {
 	err := os.MkdirAll(resultsDir, 0o755)
 	if err != nil {

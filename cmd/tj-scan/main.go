@@ -272,7 +272,7 @@ func main() {
 								resultsMu.Unlock()
 
 								if len(results)%10 == 0 {
-									cache.WriteIntermediateResults(logger, filepath.Join(resultsDir, *cacheFileFlag), results)
+									output.WriteIntermediateResults(logger, filepath.Join(resultsDir, *cacheFileFlag), results)
 								}
 							}()
 						}(run)
