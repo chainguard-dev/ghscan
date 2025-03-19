@@ -1,0 +1,20 @@
+contents:
+  repositories:
+    - "@local packages"
+  keyring:
+    - melange.rsa.pub
+  packages:
+    - tjscan@local
+
+entrypoint:
+  command: tjscan
+
+accounts:
+  groups:
+    - groupname: nonroot
+      gid: 31825
+  users:
+    - username: nonroot
+      uid: 31825
+
+archs: [aarch64, x86_64]

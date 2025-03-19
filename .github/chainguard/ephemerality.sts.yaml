@@ -1,0 +1,10 @@
+issuer: https://issuer.enforce.dev
+# chainctl auth status -o json | jq .identity
+# e.g., subject: <identity without quotes> or subject_pattern: (<identity without quotes>|<another identity without quotes>)
+subject_pattern: "[a-z0-9]+"
+claim_pattern:
+  email: ".*@chainguard.dev"
+
+permissions:
+  actions: read
+  contents: read

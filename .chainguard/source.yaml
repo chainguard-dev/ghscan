@@ -1,0 +1,8 @@
+spec:
+  authorities:
+    - keyless:
+        identities:
+          - issuer: https://accounts.google.com
+          - issuer: https://github.com/login/oauth
+    - key:
+        kms: https://github.com/web-flow.gpg
