@@ -1,4 +1,4 @@
-package cache
+package file
 
 import (
 	"encoding/json"
@@ -9,12 +9,11 @@ import (
 	tjscan "github.com/chainguard-dev/tj-scan/pkg/tj-scan"
 )
 
-const resultsDir string = "results"
-
-func LoadExistingCache(logger *clog.Logger, cacheFile string, cleanCache bool) tjscan.Cache {
+func LoadCache(logger *clog.Logger, cacheFile string, cleanCache bool) tjscan.Cache {
 	var cache tjscan.Cache
 
-	data, err := os.ReadFile(filepath.Join(resultsDir, cacheFile))
+	cf := filepath.Clean(filepath.Join(filepath.Clean(tjscan.ResultsDir), filepath.Clean(cacheFile)))
+	data, err := os.ReadFile(cf)
 	if err != nil || cleanCache {
 		logger.Infof("No existing cache found at %s, starting fresh", cacheFile)
 		return cache

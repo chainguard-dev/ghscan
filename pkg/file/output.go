@@ -1,4 +1,4 @@
-package output
+package file
 
 import (
 	"encoding/csv"
@@ -11,22 +11,21 @@ import (
 	tjscan "github.com/chainguard-dev/tj-scan/pkg/tj-scan"
 )
 
-const resultsDir string = "results"
-
-func WriteCSV(filename string, results []tjscan.Result) error {
-	fileInfo, err := os.Stat(filename)
+func writeCSV(filename string, results []tjscan.Result) error {
+	clean := filepath.Clean(filename)
+	fileInfo, err := os.Stat(clean)
 	if err == nil && fileInfo.IsDir() {
-		return fmt.Errorf("cannot write to %s: is a directory", filename)
+		return fmt.Errorf("cannot write to %s: is a directory", clean)
 	}
 
-	dir := filepath.Dir(filename)
+	dir := filepath.Dir(clean)
 	if dir != "." && dir != "/" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 	}
 
-	file, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	file, err := os.OpenFile(clean, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("failed to open file %s: %w", filename, err)
 	}
@@ -62,9 +61,10 @@ func WriteCSV(filename string, results []tjscan.Result) error {
 	return nil
 }
 
-func WriteIntermediateResults(logger *clog.Logger, cacheFile string, results []tjscan.Result) {
-	dir := filepath.Dir(cacheFile)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+func WriteCache(logger *clog.Logger, cacheFile string, results []tjscan.Result) {
+	clean := filepath.Clean(cacheFile)
+	dir := filepath.Dir(clean)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		logger.Errorf("Error creating directory for intermediate results: %v", err)
 		return
 	}
@@ -76,21 +76,21 @@ func WriteIntermediateResults(logger *clog.Logger, cacheFile string, results []t
 		return
 	}
 
-	tempFile := cacheFile + ".temp"
+	tempFile := clean + ".temp"
 	if err = os.WriteFile(tempFile, cacheData, 0o600); err != nil {
 		logger.Errorf("Error writing intermediate results: %v", err)
 		return
 	}
 
-	if err = os.Rename(tempFile, cacheFile); err != nil {
+	if err = os.Rename(tempFile, clean); err != nil {
 		logger.Errorf("Error renaming intermediate results file: %v", err)
 	}
 
 	logger.Infof("Wrote intermediate results with %d entries", len(results))
 }
 
-func WriteOutputs(logger *clog.Logger, cache tjscan.Cache, cacheFile, jsonFile, csvFile string) {
-	err := os.MkdirAll(resultsDir, 0o755)
+func WriteResults(logger *clog.Logger, cache tjscan.Cache, cacheFile, jsonFile, csvFile string) {
+	err := os.MkdirAll(tjscan.ResultsDir, 0o750)
 	if err != nil {
 		logger.Fatalf("Error creating results directory: %v", err)
 	}
@@ -100,19 +100,19 @@ func WriteOutputs(logger *clog.Logger, cache tjscan.Cache, cacheFile, jsonFile, 
 	}
 
 	if cacheFile != "" {
-		if err = os.WriteFile(filepath.Join(resultsDir, cacheFile), cacheData, 0o600); err != nil {
+		if err = os.WriteFile(filepath.Join(tjscan.ResultsDir, cacheFile), cacheData, 0o600); err != nil {
 			logger.Fatalf("Error writing cache file: %v", err)
 		}
 	}
 
 	if jsonFile != "" {
-		if err = os.WriteFile(filepath.Join(resultsDir, jsonFile), cacheData, 0o600); err != nil {
+		if err = os.WriteFile(filepath.Join(tjscan.ResultsDir, jsonFile), cacheData, 0o600); err != nil {
 			logger.Fatalf("Error writing JSON output: %v", err)
 		}
 	}
 
 	if csvFile != "" {
-		if err = WriteCSV(filepath.Join(resultsDir, csvFile), cache.Results); err != nil {
+		if err = writeCSV(filepath.Join(tjscan.ResultsDir, csvFile), cache.Results); err != nil {
 			logger.Fatalf("Error writing CSV output: %v", err)
 		}
 	}

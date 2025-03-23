@@ -1,6 +1,6 @@
 package:
   name: tjscan
-  version: "0.0.1"
+  version: "0.1.0"
   epoch: 1
   description: Scan Workflow logs for IOCs from the tj-actions/changed-files breach
   copyright:
@@ -17,7 +17,8 @@ pipeline:
   - uses: git-checkout
     with:
       repository: https://github.com/chainguard-dev/tj-scan
-      expected-commit: 3741c1c55ec24c9768546ab7796b453ffe630c1b
+      expected-commit: bf0fb207b7f711d256ecb6463e645426a0e3db01
+      tag: v${{package.version}}
 
   - uses: go/build
     with:
@@ -29,3 +30,9 @@ test:
     - name: Verify tj-scan version
       runs: |
         tjscan -h
+
+update:
+  enabled: true
+  github:
+    identifier: chainguard-dev/tj-scan
+    strip-prefix: v

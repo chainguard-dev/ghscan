@@ -9,6 +9,7 @@ require (
 	github.com/google/go-github/v69 v69.2.0
 	github.com/spf13/viper v1.20.0
 	golang.org/x/oauth2 v0.28.0
+	golang.org/x/sync v0.12.0
 )
 
 require (

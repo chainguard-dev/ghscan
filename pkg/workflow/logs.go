@@ -1,10 +1,11 @@
-package logs
+package workflow
 
 import (
 	"archive/zip"
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,10 +16,10 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/chainguard-dev/clog"
-	"github.com/chainguard-dev/tj-scan/pkg/util"
 )
 
 const (
@@ -31,7 +32,7 @@ type Base64Finding struct {
 	Decoded string
 }
 
-func ExtractLogsFromZip(rc io.Reader) (string, error) {
+func ExtractLogs(rc io.Reader) (string, error) {
 	data, err := io.ReadAll(rc)
 	if err != nil {
 		return "", err
@@ -42,22 +43,28 @@ func ExtractLogsFromZip(rc io.Reader) (string, error) {
 	}
 	var logsBuilder strings.Builder
 	for _, file := range zr.File {
-		f, err := file.Open()
+		err = func() error {
+			f, err := file.Open()
+			if err != nil {
+				return err
+			}
+			b, err := io.ReadAll(f)
+			defer f.Close()
+			if err != nil {
+				return err
+			}
+			logsBuilder.Write(b)
+			logsBuilder.WriteString("\n")
+			return nil
+		}()
 		if err != nil {
-			continue
+			return "", err
 		}
-		b, err := io.ReadAll(f)
-		f.Close()
-		if err != nil {
-			continue
-		}
-		logsBuilder.Write(b)
-		logsBuilder.WriteString("\n")
 	}
 	return logsBuilder.String(), nil
 }
 
-func DownloadRunLogs(ctx context.Context, logger *clog.Logger, owner, repo string, runID int64, token string) (io.ReadCloser, error) {
+func GetLogs(ctx context.Context, logger *clog.Logger, owner, repo string, runID int64, token string) (io.ReadCloser, error) {
 	runStatusURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d", owner, repo, runID)
 	statusReq, err := http.NewRequestWithContext(ctx, "GET", runStatusURL, nil)
 	if err != nil {
@@ -92,7 +99,7 @@ func DownloadRunLogs(ctx context.Context, logger *clog.Logger, owner, repo strin
 		return nil, fmt.Errorf("parsing run status: %w", err)
 	}
 
-	if (runInfo.Status == "cancelled" || runInfo.Conclusion == "cancelled") && runInfo.Jobs.TotalCount == 0 {
+	if (runInfo.Status == cancelled || runInfo.Conclusion == cancelled) && runInfo.Jobs.TotalCount == 0 {
 		logger.Infof("Run %d was canceled with no jobs, skipping log retrieval", runID)
 		return io.NopCloser(strings.NewReader(fmt.Sprintf("Run %d was canceled with no jobs", runID))), nil
 	}
@@ -111,17 +118,17 @@ func DownloadRunLogs(ctx context.Context, logger *clog.Logger, owner, repo strin
 	}
 
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-		logger.Warnf("Logs API returned %d for run %d; falling back to UI scraping", resp.StatusCode, runID)
-		resp.Body.Close()
+		logger.Warnf("Logs API returned %d for run %d; falling back to UI", resp.StatusCode, runID)
+		defer resp.Body.Close()
 
-		jobLogs, err := ScrapeAllRunLogs(ctx, owner, repo, runID)
+		jobLogs, err := getUILogs(ctx, owner, repo, runID)
 		if err != nil {
 			if strings.Contains(err.Error(), "no job IDs found") &&
 				(runInfo.Status == cancelled || runInfo.Conclusion == cancelled) {
 				logger.Infof("Run %d was canceled, no job logs found", runID)
 				return io.NopCloser(strings.NewReader(fmt.Sprintf("Run %d was canceled, no job logs available", runID))), nil
 			}
-			return nil, fmt.Errorf("scraping logs: %w", err)
+			return nil, fmt.Errorf("crawling UI logs: %w", err)
 		}
 
 		if len(jobLogs) == 0 {
@@ -129,10 +136,10 @@ func DownloadRunLogs(ctx context.Context, logger *clog.Logger, owner, repo strin
 				logger.Infof("Run %d was canceled, no job logs found", runID)
 				return io.NopCloser(strings.NewReader(fmt.Sprintf("Run %d was canceled, no job logs available", runID))), nil
 			}
-			return nil, fmt.Errorf("no job logs found via UI scraping")
+			return nil, fmt.Errorf("no job logs found via UI")
 		}
 
-		combinedLogs, err := CombineAllLogs(jobLogs)
+		combinedLogs, err := combineLogs(jobLogs)
 		if err != nil {
 			return nil, fmt.Errorf("combining logs: %w", err)
 		}
@@ -143,10 +150,10 @@ func DownloadRunLogs(ctx context.Context, logger *clog.Logger, owner, repo strin
 	if resp.StatusCode == http.StatusFound {
 		loc := resp.Header.Get("Location")
 		if loc == "" {
-			resp.Body.Close()
+			defer resp.Body.Close()
 			return nil, fmt.Errorf("redirect location empty")
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
 
 		redirectReq, err := http.NewRequestWithContext(ctx, "GET", loc, nil)
 		if err != nil {
@@ -159,7 +166,7 @@ func DownloadRunLogs(ctx context.Context, logger *clog.Logger, owner, repo strin
 		}
 
 		if redirectResp.StatusCode != http.StatusOK {
-			redirectResp.Body.Close()
+			defer redirectResp.Body.Close()
 			if runInfo.Status == cancelled || runInfo.Conclusion == cancelled {
 				logger.Infof("Run %d was canceled, no job logs found at redirect", runID)
 				return io.NopCloser(strings.NewReader(fmt.Sprintf("Run %d was canceled, no job logs available", runID))), nil
@@ -172,7 +179,7 @@ func DownloadRunLogs(ctx context.Context, logger *clog.Logger, owner, repo strin
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		defer resp.Body.Close()
 
 		if runInfo.Status == cancelled || runInfo.Conclusion == cancelled {
 			logger.Infof("Run %d was canceled, no job logs found in API response", runID)
@@ -185,7 +192,7 @@ func DownloadRunLogs(ctx context.Context, logger *clog.Logger, owner, repo strin
 	return resp.Body, nil
 }
 
-func ScanLogData(logger *clog.Logger, logData string, runID int64, checkEmptyLines bool) ([]Base64Finding, string, bool) {
+func ParseLogs(logger *clog.Logger, logData string, runID int64, checkEmptyLines bool) ([]Base64Finding, string, bool) {
 	scanner := bufio.NewScanner(strings.NewReader(logData))
 
 	regex := regexp.MustCompile(`(?:^|\s+)([A-Za-z0-9+/]{40,}={0,3})`)
@@ -200,7 +207,7 @@ func ScanLogData(logger *clog.Logger, logData string, runID int64, checkEmptyLin
 	emptyLinesFound := false
 	var emptyLinesInfo string
 
-	hasCompromisedSHA := strings.Contains(logData, "SHA:0e58ed8671d6b60d0890c21b07f8835ace038e67")
+	hasCompromisedSHA := strings.Contains(logData, fmt.Sprintf("SHA:%s", compromisedDigest))
 	if hasCompromisedSHA {
 		logger.Warnf("Compromised SHA found in Run ID: %d", runID)
 	}
@@ -217,7 +224,7 @@ func ScanLogData(logger *clog.Logger, logData string, runID int64, checkEmptyLin
 			for _, ms := range allMatches {
 				if len(ms) > 1 {
 					m := ms[1]
-					decoded, err := util.TryBase64Decode(m)
+					decoded, err := tryBase64Decode(m)
 					if err == nil {
 						finding := Base64Finding{
 							Encoded: m,
@@ -279,7 +286,7 @@ func ScanLogData(logger *clog.Logger, logData string, runID int64, checkEmptyLin
 	return slices.Compact(base64Findings), emptyLinesInfo, foundIssues
 }
 
-func ScrapeAllRunLogs(ctx context.Context, owner, repo string, runID int64) (map[int64]io.ReadCloser, error) {
+func getUILogs(ctx context.Context, owner, repo string, runID int64) (map[int64]io.ReadCloser, error) {
 	runURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d", owner, repo, runID)
 
 	client := &http.Client{
@@ -386,7 +393,7 @@ func ScrapeAllRunLogs(ctx context.Context, owner, repo string, runID int64) (map
 	var fetchErrors []string
 
 	for jobID, jobName := range jobIDs {
-		log, err := ScrapeJobLogs(ctx, client, owner, repo, runID, jobID)
+		log, err := scanUI(ctx, client, owner, repo, runID, jobID)
 		if err != nil {
 			fetchErrors = append(fetchErrors, fmt.Sprintf("job %s (ID: %d): %v", jobName, jobID, err))
 			continue
@@ -405,7 +412,7 @@ func ScrapeAllRunLogs(ctx context.Context, owner, repo string, runID int64) (map
 	return results, nil
 }
 
-func ScrapeJobLogs(ctx context.Context, client *http.Client, owner, repo string, runID, jobID int64) (io.ReadCloser, error) {
+func scanUI(ctx context.Context, client *http.Client, owner, repo string, runID, jobID int64) (io.ReadCloser, error) {
 	jobURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d/job/%d", owner, repo, runID, jobID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobURL, nil)
@@ -506,7 +513,7 @@ func ScrapeJobLogs(ctx context.Context, client *http.Client, owner, repo string,
 	return io.NopCloser(strings.NewReader(logsText)), nil
 }
 
-func CombineAllLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
+func combineLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
 	var combinedBuilder strings.Builder
 
 	jobIDs := make([]int64, 0, len(logsMap))
@@ -523,11 +530,29 @@ func CombineAllLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading logs for job %d: %w", jobID, err)
 		}
-		logs.Close()
+		err = logs.Close()
+		if err != nil {
+			return nil, err
+		}
 
 		combinedBuilder.Write(logContent)
 		combinedBuilder.WriteString("\n\n")
 	}
 
 	return io.NopCloser(strings.NewReader(combinedBuilder.String())), nil
+}
+
+func tryBase64Decode(s string) (string, error) {
+	decoded, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", err
+	}
+	if !utf8.Valid(decoded) {
+		return "", fmt.Errorf("decoded content is not valid UTF8")
+	}
+	doubleDecoded, err := base64.StdEncoding.DecodeString(string(decoded))
+	if err != nil {
+		return "", err
+	}
+	return string(doubleDecoded), nil
 }

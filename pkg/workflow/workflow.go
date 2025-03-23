@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/chainguard-dev/tj-scan/pkg/util"
+	"github.com/chainguard-dev/tj-scan/pkg/request"
 	"github.com/google/go-github/v69/github"
 )
 
@@ -82,14 +82,14 @@ func ListWorkflowRuns(ctx context.Context, logger *clog.Logger, client *github.C
 			}
 
 			var chunkRuns []*github.WorkflowRun
-			err := util.WithRetry(chunkCtx, logger, func() error {
+			err := request.WithRetry(chunkCtx, logger, func() error {
 				for {
 					wr, resp, err := client.Actions.ListWorkflowRunsByID(chunkCtx, owner, repo, workflowID, opts)
 					if err != nil {
 						return err
 					}
 
-					if *wr.TotalCount > 0 {
+					if wr.GetTotalCount() > 0 {
 						chunkRuns = append(chunkRuns, wr.WorkflowRuns...)
 					}
 

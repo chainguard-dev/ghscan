@@ -8,10 +8,10 @@ keygen:
 	melange keygen
 
 melange: keygen
-	melange build --arch arm64,x86_64 tj-scan.yaml --signing-key melange.rsa --git-repo-url  https://github.com/chainguard-dev/tj-scan --git-commit 3741c1c55ec24c9768546ab7796b453ffe630c1b
+	melange build --arch arm64,x86_64 tj-scan.yaml --signing-key melange.rsa
 
 apko: melange
-	apko build tjscan.apko.yaml tjscan:latest tjscan.tar
+	apko build tj-scan.apko.yaml tjscan:latest tjscan.tar
 
 tj-scan-docker:
 	docker load < tjscan.tar
