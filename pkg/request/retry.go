@@ -1,36 +1,19 @@
-package util
+package request
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/cenkalti/backoff/v5"
 	"github.com/chainguard-dev/clog"
 	"github.com/spf13/viper"
 )
 
-func TryBase64Decode(s string) (string, error) {
-	decoded, err := base64.StdEncoding.DecodeString(s)
-	if err != nil {
-		return "", err
-	}
-	if !utf8.Valid(decoded) {
-		return "", fmt.Errorf("decoded content is not valid UTF8")
-	}
-	doubleDecoded, err := base64.StdEncoding.DecodeString(string(decoded))
-	if err != nil {
-		return "", err
-	}
-	return string(doubleDecoded), nil
-}
-
 func WithRetry(ctx context.Context, logger *clog.Logger, operation func() error) error {
 	maxRetries := viper.GetInt("max_retries")
-	var attempt int
+	attempt := 0
 
 	wrappedOperation := func() (interface{}, error) {
 		if ctx.Err() != nil {

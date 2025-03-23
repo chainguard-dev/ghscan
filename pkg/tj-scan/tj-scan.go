@@ -1,5 +1,27 @@
 package tjscan
 
+import (
+	"time"
+
+	"github.com/google/go-github/v69/github"
+)
+
+const ResultsDir string = "results"
+
+type Request struct {
+	Cache         Cache
+	CacheFile     string
+	CachedResults map[string]bool
+	Client        *github.Client
+	EndTime       time.Time
+	Owner         string
+	RepoName      string
+	StartTime     time.Time
+	Timeout       time.Duration
+	Token         string
+	Workflows     []string
+}
+
 type Result struct {
 	Repository       string `json:"repository"`
 	WorkflowFileName string `json:"workflow_file_name"`

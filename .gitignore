@@ -32,3 +32,6 @@ results
 
 out
 packages
+
+*.json
+*.tar
