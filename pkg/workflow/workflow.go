@@ -118,8 +118,7 @@ func ListWorkflowRuns(ctx context.Context, logger *clog.Logger, client *github.C
 		}()
 	}
 
-	logger.Infof("Found total of %d runs for workflow %d in %s/%s",
-		len(allRuns), workflowID, owner, repo)
+	logger.Infof("Found total of %d runs for workflow %d in %s/%s", len(allRuns), workflowID, owner, repo)
 
 	return allRuns, nil
 }

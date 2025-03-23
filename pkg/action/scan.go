@@ -87,8 +87,6 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 	g, gCtx := errgroup.WithContext(ctx)
 	g.SetLimit(2)
 
-	logger.Infof("Found %d runs for workflow %s in %s/%s", len(runs), wfFileName, req.Owner, req.RepoName)
-
 	var runResults []tjscan.Result
 	for _, run := range runs {
 		g.Go(func() error {
@@ -173,13 +171,14 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 	return nil
 }
 
-func Scan(ctx context.Context, logger *clog.Logger, req *tjscan.Request, repos []*github.Repository) error {
+func scanRepos(ctx context.Context, logger *clog.Logger, scanner *Scanner, req *tjscan.Request, repos []*github.Repository) error {
 	if req == nil {
 		return fmt.Errorf("req cannot be nil")
 	}
 
-	scanner := NewScanner(logger, &req.Cache, req.CacheFile, 10)
-	defer scanner.Close()
+	if scanner == nil {
+		return fmt.Errorf("scanner is nil")
+	}
 
 	maxConcurrency := viper.GetInt("max_concurrency")
 	g, gCtx := errgroup.WithContext(ctx)
@@ -224,4 +223,10 @@ func Scan(ctx context.Context, logger *clog.Logger, req *tjscan.Request, repos [
 	}
 
 	return g.Wait()
+}
+
+func Scan(ctx context.Context, logger *clog.Logger, req *tjscan.Request, repos []*github.Repository) error {
+	scanner := NewScanner(logger, &req.Cache, req.CacheFile, 10)
+	defer scanner.Close()
+	return scanRepos(ctx, logger, scanner, req, repos)
 }
