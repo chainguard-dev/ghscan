@@ -12,6 +12,7 @@ import (
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/tj-scan/pkg/action"
 	"github.com/chainguard-dev/tj-scan/pkg/file"
+	"github.com/chainguard-dev/tj-scan/pkg/ioc"
 	tjscan "github.com/chainguard-dev/tj-scan/pkg/tj-scan"
 	"github.com/google/go-github/v69/github"
 	"github.com/spf13/viper"
@@ -27,6 +28,7 @@ func main() {
 	viper.AddConfigPath(".")
 	viper.SetDefault("token", os.Getenv("GITHUB_TOKEN"))
 	viper.SetDefault("clean_cache", false)
+	viper.SetDefault("ioc.name", "tj-actions/changed-files")
 
 	if err := viper.ReadInConfig(); err != nil {
 		logger.Info("No config file found; using defaults and flags")
@@ -40,6 +42,9 @@ func main() {
 	csvOutputFlag := flag.String("csv", viper.GetString("csv_output"), "Path to final CSV output file")
 	startTimeFlag := flag.String("start", viper.GetString("start_time"), "Start time for workflow run filtering (RFC3339)")
 	endTimeFlag := flag.String("end", viper.GetString("end_time"), "End time for workflow run filtering (RFC3339)")
+	iocNameFlag := flag.String("ioc-name", viper.GetString("ioc.name"), "IOC Logs to scan for (e.g. tj-actions/changed-files")
+	iocDigestFlag := flag.String("ioc-digest", viper.GetString("ioc.digest"), "Malicious digest to search for in logs")
+	iocPatternFlag := flag.String("ioc-pattern", viper.GetString("ioc.pattern"), "Regex pattern to search logs with")
 	flag.Parse()
 
 	if *targetFlag == "" {
@@ -47,6 +52,17 @@ func main() {
 	}
 	if *tokenFlag == "" {
 		logger.Fatal("GITHUB_TOKEN or -token must be provided")
+	}
+
+	ic := &ioc.Config{
+		Name:    *iocNameFlag,
+		Digest:  *iocDigestFlag,
+		Pattern: *iocPatternFlag,
+	}
+
+	findIOC, err := ioc.NewIOC(ic)
+	if err != nil {
+		logger.Fatalf("Failed to initialize IOC: %v", err)
 	}
 
 	globalTimeoutStr := viper.GetString("global_timeout")
@@ -121,9 +137,11 @@ func main() {
 		CachedResults: cachedResults,
 		Client:        client,
 		EndTime:       endTime,
+		IOC:           findIOC,
 		StartTime:     startTime,
 		Token:         *tokenFlag,
 	}
+
 	err = action.Scan(ctx, logger, &req, repos)
 	if err != nil {
 		logger.Errorf("Failed to scan Workflows in repos: %v", err)

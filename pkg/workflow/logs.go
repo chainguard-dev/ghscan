@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -20,11 +19,13 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/chainguard-dev/clog"
+	"github.com/chainguard-dev/tj-scan/pkg/ioc"
 )
 
 const (
-	cancelled         string = "cancelled"
-	compromisedDigest string = "0e58ed8671d6b60d0890c21b07f8835ace038e67"
+	cancelled      string = "cancelled"
+	header         string = "Mozilla/5.0 (compatible; IOCScanner/1.0)"
+	timestampRegex string = `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+`
 )
 
 type Base64Finding struct {
@@ -192,22 +193,21 @@ func GetLogs(ctx context.Context, logger *clog.Logger, owner, repo string, runID
 	return resp.Body, nil
 }
 
-func ParseLogs(logger *clog.Logger, logData string, runID int64, checkEmptyLines bool) ([]Base64Finding, string, bool) {
+func ParseLogs(logger *clog.Logger, logData string, runID int64, findIOC *ioc.IOC) ([]Base64Finding, string, bool) {
+	if findIOC == nil {
+		logger.Errorf("findIOC is nil, unable to scan logs")
+		return nil, "", false
+	}
+
 	scanner := bufio.NewScanner(strings.NewReader(logData))
 
-	regex := regexp.MustCompile(`(?:^|\s+)([A-Za-z0-9+/]{40,}={0,3})`)
-
-	timestampRegex := regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+`)
+	regex := findIOC.GetRegex()
 
 	lineNum := 0
 	var base64Findings []Base64Finding
-
-	foundChangedFilesHeader := false
-	emptyLinesSeen := []int{}
-	emptyLinesFound := false
 	var emptyLinesInfo string
 
-	hasCompromisedSHA := strings.Contains(logData, fmt.Sprintf("SHA:%s", compromisedDigest))
+	hasCompromisedSHA := strings.Contains(logData, fmt.Sprintf("SHA:%s", findIOC.GetDigest()))
 	if hasCompromisedSHA {
 		logger.Warnf("Compromised SHA found in Run ID: %d", runID)
 	}
@@ -215,9 +215,6 @@ func ParseLogs(logger *clog.Logger, logData string, runID int64, checkEmptyLines
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineNum++
-		contentLine := timestampRegex.ReplaceAllString(line, "")
-
-		isLineEmpty := strings.TrimSpace(contentLine) == ""
 
 		allMatches := regex.FindAllStringSubmatch(line, -1)
 		if len(allMatches) > 0 {
@@ -236,49 +233,13 @@ func ParseLogs(logger *clog.Logger, logData string, runID int64, checkEmptyLines
 				}
 			}
 		}
-
-		//nolint:nestif //ignore complexity of 17
-		if checkEmptyLines {
-			if !foundChangedFilesHeader && strings.Contains(contentLine, "##[group]changed-files") {
-				foundChangedFilesHeader = true
-				emptyLinesSeen = []int{}
-				logger.Debugf("Found changed-files header at log line %d in Run ID: %d", lineNum, runID)
-			} else if foundChangedFilesHeader {
-				if isLineEmpty {
-					emptyLinesSeen = append(emptyLinesSeen, lineNum)
-
-					if len(emptyLinesSeen) >= 2 {
-						if emptyLinesSeen[len(emptyLinesSeen)-1] == emptyLinesSeen[len(emptyLinesSeen)-2]+1 {
-							logger.Infof("Found consecutive empty lines at log line %d and %d in Run ID: %d!",
-								emptyLinesSeen[len(emptyLinesSeen)-2],
-								emptyLinesSeen[len(emptyLinesSeen)-1],
-								runID)
-							emptyLinesFound = true
-							for l := range emptyLinesSeen {
-								if emptyLinesSeen[l+1] == emptyLinesSeen[l]+1 {
-									emptyLinesInfo = fmt.Sprintf("Log lines %d-%d after changed-files",
-										emptyLinesSeen[l], emptyLinesSeen[l])
-									break
-								}
-							}
-						}
-					}
-				} else if strings.Contains(contentLine, "Using local .git directory") ||
-					!strings.Contains(contentLine, "##[group]changed-files") {
-					foundChangedFilesHeader = false
-				}
-			}
-		}
 	}
 
-	foundIssues := len(base64Findings) > 0 || emptyLinesFound
+	foundIssues := len(base64Findings) > 0
 
 	switch {
 	case len(base64Findings) > 0:
-		emptyLinesInfo = ""
 		logger.Infof("Returning %d unique base64 findings in Run ID: %d", len(base64Findings), runID)
-	case emptyLinesFound:
-		logger.Infof("Returning empty lines result: %s in Run ID: %d", emptyLinesInfo, runID)
 	default:
 		logger.Infof("No issues found in Run ID: %d", runID)
 	}
@@ -298,7 +259,7 @@ func getUILogs(ctx context.Context, owner, repo string, runID int64) (map[int64]
 		return nil, fmt.Errorf("creating run page request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; LogScraper/1.0)")
+	req.Header.Set("User-Agent", header)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -420,7 +381,7 @@ func scanUI(ctx context.Context, client *http.Client, owner, repo string, runID,
 		return nil, fmt.Errorf("creating job page request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; LogScraper/1.0)")
+	req.Header.Set("User-Agent", header)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -492,7 +453,7 @@ func scanUI(ctx context.Context, client *http.Client, owner, repo string, runID,
 		if rawLogURL != "" {
 			rawReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawLogURL, nil)
 			if err == nil {
-				rawReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; LogScraper/1.0)")
+				rawReq.Header.Set("User-Agent", header)
 				rawResp, err := client.Do(rawReq)
 				if err == nil && rawResp.StatusCode == http.StatusOK {
 					defer rawResp.Body.Close()
