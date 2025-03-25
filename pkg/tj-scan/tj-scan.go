@@ -3,6 +3,7 @@ package tjscan
 import (
 	"time"
 
+	"github.com/chainguard-dev/tj-scan/pkg/ioc"
 	"github.com/google/go-github/v69/github"
 )
 
@@ -14,6 +15,7 @@ type Request struct {
 	CachedResults map[string]bool
 	Client        *github.Client
 	EndTime       time.Time
+	IOC           *ioc.IOC
 	Owner         string
 	RepoName      string
 	StartTime     time.Time

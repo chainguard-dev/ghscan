@@ -8,3 +8,10 @@ max_concurrency: 5
 max_retries: 3
 start_time: "2025-03-14T00:00:00Z"
 end_time: "2025-03-16T00:00:00Z"
+ioc:
+  name: "tj-actions/changed-files"
+# custom example
+# ioc:
+#  name: "custom-ioc-name"
+#  digest: "0e58ed8671d6b60d0890c21b07f8835ace038e67"
+#  pattern: "(?:^|\\s+)([A-Za-z0-9+/]{40,}={0,3})"
