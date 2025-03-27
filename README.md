@@ -45,6 +45,12 @@ permissions:
       Path to final CSV output file
 -end string
       End time for workflow run filtering (RFC3339) (default "2025-03-16T00:00:00Z")
+-ioc-content string
+      Comma-separated string(s) to search for in logs
+-ioc-name string
+      IOC Logs to scan for (e.g. tj-actions/changed-files (default "tj-actions/changed-files")
+-ioc-pattern string
+      Regex pattern to search logs with
 -json string
       Path to final JSON output file
 -start string
@@ -61,5 +67,17 @@ $ chainctl auth octo-sts --scope chainguard-dev/tj-scan --identity ephemerality 
 2025/03/18 11:27:59 INFO Found 1 repositories to scan
 2025/03/18 11:27:59 INFO No existing cache found at cache.json, starting fresh
 ```
+
+Custom IOC configuration can be provided with the flags documented above or added to `config.yaml`:
+```yaml
+ioc:
+  name: "custom-ioc-name"
+  content: "0e58ed8671d6b60d0890c21b07f8835ace038e67,example-string,example-string2"
+  pattern: "(?:^|\\s+)([A-Za-z0-9+/]{40,}={0,3})"
+```
+
+`name` is a reference to the IOC
+`content` is the string or strings to search for in the Workflow logs
+`pattern` is an optional regex pattern to search for in the Workflow logs
 
 Results will be saved in the `results/` directory.

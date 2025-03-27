@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +28,18 @@ const (
 	header         string = "Mozilla/5.0 (compatible; IOCScanner/1.0)"
 	timestampRegex string = `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+`
 )
+
+var selectors = []string{
+	".js-build-log pre",
+	".js-job-log-content pre",
+	".js-log-output pre",
+	".log-body pre",
+	".log-body-container pre",
+	"div.job-log-container pre",
+	"div[data-test-selector='job-log'] pre",
+	"pre.js-file-line-container",
+	"pre.logs",
+}
 
 type Finding struct {
 	Encoded  string
@@ -215,29 +226,13 @@ func ParseLogs(logger *clog.Logger, logData string, runID int64, findIOC *ioc.IO
 		line := scanner.Text()
 		lineNum++
 
-		for _, content := range findIOC.GetContent() {
-			if strings.Contains(line, content) {
-				clean := timestamp.ReplaceAllString(line, "")
-				lineMap[clean] = struct{}{}
-				logger.Warnf("IOC log entry found in Run ID: %d", runID)
-			}
+		lineMap = findMatch(line, findIOC, timestamp, lineMap, logger, runID)
+
+		if regex == nil {
+			continue
 		}
 
-		for _, match := range regex.FindAllStringSubmatch(line, -1) {
-			if len(match) > 1 {
-				encoded := match[1]
-				if decoded, err := tryBase64Decode(encoded); err == nil {
-					encodedMap[encoded] = struct{}{}
-					if secondDecoded, err := tryBase64Decode(decoded); err == nil {
-						decodedMap[secondDecoded] = struct{}{}
-						logger.Warnf("Found valid double base64-encoded content at log line %d in Run ID: %d", lineNum, runID)
-					} else {
-						decodedMap[decoded] = struct{}{}
-						logger.Infof("Found valid base64-encoded content at log line %d in Run ID: %d", lineNum, runID)
-					}
-				}
-			}
-		}
+		encodedMap, decodedMap = processMatch(line, regex, lineNum, encodedMap, decodedMap, logger, runID)
 	}
 
 	lineData := slices.Collect(maps.Keys(lineMap))
@@ -252,23 +247,72 @@ func ParseLogs(logger *clog.Logger, logData string, runID int64, findIOC *ioc.IO
 
 	findings := []Finding{finding}
 	foundIssues := len(findings) > 0
-
-	if foundIssues {
-		logger.Infof("Found issues in Run ID: %d (lineData: %d, encodedData: %d, decodedData: %d)",
-			runID, len(lineData), len(encodedData), len(decodedData))
-	} else {
-		logger.Infof("No issues found in Run ID: %d", runID)
-	}
-
 	return findings, foundIssues
 }
 
-func getUILogs(ctx context.Context, owner, repo string, runID int64) (map[int64]io.ReadCloser, error) {
-	runURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d", owner, repo, runID)
+func findMatch(line string, findIOC *ioc.IOC, timestamp *regexp.Regexp, lineMap map[string]struct{}, logger *clog.Logger, runID int64) map[string]struct{} {
+	for _, content := range findIOC.GetContent() {
+		if !strings.Contains(line, content) {
+			continue
+		}
 
-	client := &http.Client{
-		Timeout: 30 * time.Second,
+		clean := timestamp.ReplaceAllString(line, "")
+		lineMap[clean] = struct{}{}
+		logger.Warnf("IOC log entry found in Run ID: %d", runID)
 	}
+
+	return lineMap
+}
+
+func processMatch(line string, regex *regexp.Regexp, lineNum int, encodedMap, decodedMap map[string]struct{}, logger *clog.Logger, runID int64) (map[string]struct{}, map[string]struct{}) {
+	matches := regex.FindAllStringSubmatch(line, -1)
+	for _, match := range matches {
+		if len(match) <= 1 {
+			continue
+		}
+
+		encoded := match[1]
+		decoded, err := tryBase64Decode(encoded)
+		if err != nil {
+			continue
+		}
+
+		encodedMap[encoded] = struct{}{}
+		decodedMap = handleDecoded(decoded, lineNum, decodedMap, logger, runID)
+	}
+
+	return encodedMap, decodedMap
+}
+
+func handleDecoded(decoded string, lineNum int, decodedMap map[string]struct{}, logger *clog.Logger, runID int64) map[string]struct{} {
+	secondDecoded, err := tryBase64Decode(decoded)
+	if err == nil {
+		decodedMap[secondDecoded] = struct{}{}
+		logger.Warnf("Found valid double base64-encoded content at log line %d in Run ID: %d", lineNum, runID)
+	} else {
+		decodedMap[decoded] = struct{}{}
+		logger.Infof("Found valid base64-encoded content at log line %d in Run ID: %d", lineNum, runID)
+	}
+	return decodedMap
+}
+
+func getUILogs(ctx context.Context, owner, repo string, runID int64) (map[int64]io.ReadCloser, error) {
+	doc, err := fetchRunPage(ctx, owner, repo, runID)
+	if err != nil {
+		return nil, err
+	}
+
+	jobIDs := getJobIDs(doc, runID)
+	if len(jobIDs) == 0 {
+		return nil, fmt.Errorf("no job IDs found in run page")
+	}
+
+	return fetchJobLogs(ctx, owner, repo, runID, jobIDs)
+}
+
+func fetchRunPage(ctx context.Context, owner, repo string, runID int64) (*goquery.Document, error) {
+	runURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d", owner, repo, runID)
+	client := &http.Client{Timeout: 30 * time.Second}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, runURL, nil)
 	if err != nil {
@@ -287,12 +331,28 @@ func getUILogs(ctx context.Context, owner, repo string, runID int64) (map[int64]
 		return nil, fmt.Errorf("failed to retrieve run page, status code: %d", resp.StatusCode)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("parsing run page HTML: %w", err)
+	return goquery.NewDocumentFromReader(resp.Body)
+}
+
+func getJobIDs(doc *goquery.Document, runID int64) map[int64]string {
+	jobIDs := make(map[int64]string)
+
+	getJobByLink(doc, runID, jobIDs)
+
+	if len(jobIDs) == 0 {
+		getJobByAttr(doc, jobIDs)
 	}
 
-	jobIDs := make(map[int64]string)
+	return jobIDs
+}
+
+func getJobByLink(doc *goquery.Document, runID int64, jobIDs map[int64]string) {
+	patterns := []string{
+		fmt.Sprintf("/actions/runs/%d/job/", runID),
+		fmt.Sprintf("/actions/runs/%d/jobs/", runID),
+		"/job/",
+		"/jobs/",
+	}
 
 	doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
 		href, exists := s.Attr("href")
@@ -300,74 +360,101 @@ func getUILogs(ctx context.Context, owner, repo string, runID int64) (map[int64]
 			return
 		}
 
-		patterns := []string{
-			fmt.Sprintf("/actions/runs/%d/job/", runID),
-			fmt.Sprintf("/actions/runs/%d/jobs/", runID),
-			"/job/",
-			"/jobs/",
+		for _, pattern := range patterns {
+			if !strings.Contains(href, pattern) {
+				continue
+			}
+
+			parts := strings.Split(href, pattern)
+			if len(parts) < 2 {
+				continue
+			}
+
+			jobIDStr := strings.Split(parts[1], "/")[0]
+			jobID, err := strconv.ParseInt(jobIDStr, 10, 64)
+			if err != nil || jobID <= 0 {
+				continue
+			}
+
+			jobName := getJobName(s, jobID)
+			jobIDs[jobID] = jobName
+		}
+	})
+}
+
+func getJobByAttr(doc *goquery.Document, jobIDs map[int64]string) {
+	doc.Find("div[data-job-id], div[data-job], div.job").Each(func(_ int, s *goquery.Selection) {
+		jobIDStr := getJobByElement(s)
+
+		if jobIDStr == "" {
+			jobIDStr = getJobByNestedElement(s)
 		}
 
-		//nolint:nestif //ignore complexity of 9
-		for _, pattern := range patterns {
-			if strings.Contains(href, pattern) {
-				parts := strings.Split(href, pattern)
-				if len(parts) >= 2 {
-					jobIDStr := strings.Split(parts[1], "/")[0]
-					jobID, err := strconv.ParseInt(jobIDStr, 10, 64)
-					if err == nil && jobID > 0 {
-						jobName := s.Text()
-						jobName = strings.TrimSpace(jobName)
-						if jobName == "" {
-							jobName = s.ParentsFiltered("div.job").Find("h3").Text()
-							jobName = strings.TrimSpace(jobName)
-						}
-						if jobName == "" {
-							jobName = fmt.Sprintf("Job-%d", jobID)
-						}
-						jobIDs[jobID] = jobName
-					}
-				}
-			}
+		if jobIDStr == "" {
+			return
+		}
+
+		jobID, err := strconv.ParseInt(jobIDStr, 10, 64)
+		if err != nil || jobID <= 0 {
+			return
+		}
+
+		jobName := s.Find("h3, h4, .job-name").First().Text()
+		jobName = strings.TrimSpace(jobName)
+		if jobName == "" {
+			jobName = fmt.Sprintf("Job-%d", jobID)
+		}
+
+		jobIDs[jobID] = jobName
+	})
+}
+
+func getJobByElement(s *goquery.Selection) string {
+	if jobIDStr, exists := s.Attr("data-job-id"); exists {
+		return jobIDStr
+	}
+	if jobIDStr, exists := s.Attr("data-job"); exists {
+		return jobIDStr
+	}
+	return ""
+}
+
+func getJobByNestedElement(s *goquery.Selection) string {
+	var jobIDStr string
+
+	s.Find("[data-job-id], [data-job]").Each(func(_ int, nested *goquery.Selection) {
+		if jobIDStr != "" {
+			return
+		}
+
+		if idStr, hasAttr := nested.Attr("data-job-id"); hasAttr {
+			jobIDStr = idStr
+		} else if idStr, hasAttr := nested.Attr("data-job"); hasAttr {
+			jobIDStr = idStr
 		}
 	})
 
-	//nolint:nestif //ignore complexity of 11
-	if len(jobIDs) == 0 {
-		doc.Find("div[data-job-id], div[data-job], div.job").Each(func(_ int, s *goquery.Selection) {
-			jobIDStr, exists := s.Attr("data-job-id")
-			if !exists {
-				jobIDStr, exists = s.Attr("data-job")
-			}
-			if !exists {
-				s.Find("[data-job-id], [data-job]").Each(func(_ int, nested *goquery.Selection) {
-					if idStr, hasAttr := nested.Attr("data-job-id"); hasAttr {
-						jobIDStr = idStr
-					} else if idStr, hasAttr := nested.Attr("data-job"); hasAttr {
-						jobIDStr = idStr
-					}
-				})
-			}
+	return jobIDStr
+}
 
-			if jobIDStr != "" {
-				jobID, err := strconv.ParseInt(jobIDStr, 10, 64)
-				if err == nil && jobID > 0 {
-					jobName := s.Find("h3, h4, .job-name").First().Text()
-					jobName = strings.TrimSpace(jobName)
-					if jobName == "" {
-						jobName = fmt.Sprintf("Job-%d", jobID)
-					}
-					jobIDs[jobID] = jobName
-				}
-			}
-		})
+func getJobName(s *goquery.Selection, jobID int64) string {
+	jobName := strings.TrimSpace(s.Text())
+
+	if jobName == "" {
+		jobName = strings.TrimSpace(s.ParentsFiltered("div.job").Find("h3").Text())
 	}
 
-	if len(jobIDs) == 0 {
-		return nil, fmt.Errorf("no job IDs found in run page")
+	if jobName == "" {
+		jobName = fmt.Sprintf("Job-%d", jobID)
 	}
 
+	return jobName
+}
+
+func fetchJobLogs(ctx context.Context, owner, repo string, runID int64, jobIDs map[int64]string) (map[int64]io.ReadCloser, error) {
 	results := make(map[int64]io.ReadCloser)
 	var fetchErrors []string
+	client := &http.Client{Timeout: 30 * time.Second}
 
 	for jobID, jobName := range jobIDs {
 		log, err := scanUI(ctx, client, owner, repo, runID, jobID)
@@ -390,6 +477,31 @@ func getUILogs(ctx context.Context, owner, repo string, runID int64) (map[int64]
 }
 
 func scanUI(ctx context.Context, client *http.Client, owner, repo string, runID, jobID int64) (io.ReadCloser, error) {
+	doc, err := fetchJobPage(ctx, client, owner, repo, runID, jobID)
+	if err != nil {
+		return nil, err
+	}
+
+	logs, found := getLogsBySelector(doc)
+	if !found {
+		logs, found = getLogsByTag(doc)
+	}
+
+	if !found {
+		logs, err := getLogData(ctx, client, doc)
+		if err == nil {
+			return logs, nil
+		}
+	}
+
+	if logs == "" {
+		return nil, fmt.Errorf("no logs found for job ID %d", jobID)
+	}
+
+	return io.NopCloser(strings.NewReader(logs)), nil
+}
+
+func fetchJobPage(ctx context.Context, client *http.Client, owner, repo string, runID, jobID int64) (*goquery.Document, error) {
 	jobURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d/job/%d", owner, repo, runID, jobID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobURL, nil)
@@ -409,85 +521,115 @@ func scanUI(ctx context.Context, client *http.Client, owner, repo string, runID,
 		return nil, fmt.Errorf("failed to retrieve job page, status code: %d", resp.StatusCode)
 	}
 
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("parsing job page HTML: %w", err)
-	}
+	return goquery.NewDocumentFromReader(resp.Body)
+}
 
+func getLogsBySelector(doc *goquery.Document) (string, bool) {
 	var logsBuilder strings.Builder
 	found := false
 
-	selectors := []string{
-		".js-build-log pre",
-		".js-job-log-content pre",
-		".js-log-output pre",
-		".log-body pre",
-		".log-body-container pre",
-		"div.job-log-container pre",
-		"div[data-test-selector='job-log'] pre",
-		"pre.js-file-line-container",
-		"pre.logs",
-	}
-
 	for _, selector := range selectors {
 		selections := doc.Find(selector)
-		if selections.Length() > 0 {
-			selections.Each(func(_ int, s *goquery.Selection) {
-				logsBuilder.WriteString(s.Text())
-				logsBuilder.WriteString("\n")
-			})
-			found = true
-			break
+		if selections.Length() == 0 {
+			continue
 		}
+
+		selections.Each(func(_ int, s *goquery.Selection) {
+			logsBuilder.WriteString(s.Text())
+			logsBuilder.WriteString("\n")
+		})
+		found = true
+		break
 	}
 
-	if !found {
-		doc.Find("pre").Each(func(_ int, s *goquery.Selection) {
-			if len(s.Text()) > 100 || strings.Contains(s.Text(), "Starting job") {
-				logsBuilder.WriteString(s.Text())
-				logsBuilder.WriteString("\n")
-				found = true
-			}
-		})
+	return logsBuilder.String(), found
+}
+
+func getLogsByTag(doc *goquery.Document) (string, bool) {
+	var logsBuilder strings.Builder
+	found := false
+
+	doc.Find("pre").Each(func(_ int, s *goquery.Selection) {
+		text := s.Text()
+		if len(text) <= 100 && !strings.Contains(text, "Starting job") {
+			return
+		}
+
+		logsBuilder.WriteString(text)
+		logsBuilder.WriteString("\n")
+		found = true
+	})
+
+	return logsBuilder.String(), found
+}
+
+func getLogData(ctx context.Context, client *http.Client, doc *goquery.Document) (io.ReadCloser, error) {
+	rawLogURL := findLogURL(doc)
+	if rawLogURL == "" {
+		return nil, fmt.Errorf("raw log URL not found")
 	}
 
-	//nolint:nestif //ignore complexity of 13
-	if !found {
-		rawLogURL := ""
-		doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
-			href, exists := s.Attr("href")
-			text := s.Text()
-			if exists && (strings.Contains(text, "Download log") || strings.Contains(text, "Raw log") ||
-				strings.Contains(href, "logs") || strings.Contains(href, "raw")) {
-				rawLogURL = href
-				if !strings.HasPrefix(rawLogURL, "http") {
-					rawLogURL = "https://github.com" + rawLogURL
-				}
-			}
-		})
+	if !strings.HasPrefix(rawLogURL, "http") {
+		rawLogURL = "https://github.com" + rawLogURL
+	}
 
+	return fetchLogs(ctx, client, rawLogURL)
+}
+
+func findLogURL(doc *goquery.Document) string {
+	var rawLogURL string
+
+	doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
 		if rawLogURL != "" {
-			rawReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawLogURL, nil)
-			if err == nil {
-				rawReq.Header.Set("User-Agent", header)
-				rawResp, err := client.Do(rawReq)
-				if err == nil && rawResp.StatusCode == http.StatusOK {
-					defer rawResp.Body.Close()
-					rawLogs, err := io.ReadAll(rawResp.Body)
-					if err == nil && len(rawLogs) > 0 {
-						return io.NopCloser(bytes.NewReader(rawLogs)), nil
-					}
-				}
-			}
+			return
 		}
+
+		href, exists := s.Attr("href")
+		if !exists {
+			return
+		}
+
+		text := s.Text()
+		if strings.Contains(text, "Download log") ||
+			strings.Contains(text, "Raw log") ||
+			strings.Contains(href, "logs") ||
+			strings.Contains(href, "raw") {
+			rawLogURL = href
+		}
+	})
+
+	return rawLogURL
+}
+
+func fetchLogs(ctx context.Context, client *http.Client, rawLogURL string) (io.ReadCloser, error) {
+	rawReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawLogURL, nil)
+	if err != nil {
+		return nil, err
 	}
 
-	logsText := logsBuilder.String()
-	if logsText == "" {
-		return nil, fmt.Errorf("no logs found for job ID %d", jobID)
+	rawReq.Header.Set("User-Agent", header)
+	rawResp, err := client.Do(rawReq)
+	if err != nil {
+		return nil, err
 	}
 
-	return io.NopCloser(strings.NewReader(logsText)), nil
+	if rawResp.StatusCode != http.StatusOK {
+		rawResp.Body.Close()
+		return nil, fmt.Errorf("failed to retrieve raw logs, status code: %d", rawResp.StatusCode)
+	}
+
+	var buffer bytes.Buffer
+	_, err = buffer.ReadFrom(rawResp.Body)
+	rawResp.Body.Close()
+	if err != nil {
+		return nil, fmt.Errorf("reading raw logs: %w", err)
+	}
+
+	if buffer.Len() == 0 {
+		return nil, fmt.Errorf("empty raw logs")
+	}
+
+	return io.NopCloser(bytes.NewReader(buffer.Bytes())), nil
 }
 
 func combineLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
@@ -497,7 +639,7 @@ func combineLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
 	for jobID := range logsMap {
 		jobIDs = append(jobIDs, jobID)
 	}
-	sort.Slice(jobIDs, func(i, j int) bool { return jobIDs[i] < jobIDs[j] })
+	slices.Sort(jobIDs)
 
 	for _, jobID := range jobIDs {
 		logs := logsMap[jobID]

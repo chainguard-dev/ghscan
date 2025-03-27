@@ -53,13 +53,17 @@ func NewIOC(config *Config) (*IOC, error) {
 		return nil, fmt.Errorf("predefined IOC not found: %s", config.Name)
 	}
 
-	if config.Pattern == "" {
-		return nil, fmt.Errorf("pattern is required for novel IOC")
+	if config.Pattern == "" && len(config.Content) == 0 {
+		return nil, fmt.Errorf("either content or pattern is required for novel IOC")
 	}
 
-	regex, err := regexp.Compile(config.Pattern)
-	if err != nil {
-		return nil, fmt.Errorf("invalid regex pattern: %w", err)
+	var regex *regexp.Regexp
+	var err error
+	if config.Pattern != "" {
+		regex, err = regexp.Compile(config.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex pattern: %w", err)
+		}
 	}
 
 	name := config.Name
