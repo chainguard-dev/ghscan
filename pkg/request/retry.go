@@ -15,7 +15,7 @@ func WithRetry(ctx context.Context, logger *clog.Logger, operation func() error)
 	maxRetries := viper.GetInt("max_retries")
 	attempt := 0
 
-	wrappedOperation := func() (interface{}, error) {
+	wrappedOperation := func() (any, error) {
 		if ctx.Err() != nil {
 			return nil, backoff.Permanent(ctx.Err())
 		}
