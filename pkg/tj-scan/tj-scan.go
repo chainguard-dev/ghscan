@@ -25,15 +25,19 @@ type Request struct {
 }
 
 type Result struct {
-	Repository       string `json:"repository"`
-	WorkflowFileName string `json:"workflow_file_name"`
-	WorkflowURL      string `json:"workflow_url"`
-	WorkflowRunURL   string `json:"workflow_run_url"`
-	Base64Data       string `json:"base64_data"`
-	DecodedData      string `json:"decoded_data"`
-	EmptyLines       string `json:"empty_lines"`
+	Base64Data       string `json:"base64_data,omitempty"`
+	DecodedData      string `json:"decoded_data,omitempty"`
+	LineData         string `json:"line_data,omitempty"`
+	Repository       string `json:"repository,omitempty"`
+	WorkflowFileName string `json:"workflow_file_name,omitempty"`
+	WorkflowRunURL   string `json:"workflow_run_url,omitempty"`
+	WorkflowURL      string `json:"workflow_url,omitempty"`
+}
+
+func (r *Result) IsEmpty() bool {
+	return r.Base64Data == "" && r.DecodedData == "" && r.LineData == ""
 }
 
 type Cache struct {
-	Results []Result `json:"results"`
+	Results []Result `json:"results,omitempty"`
 }

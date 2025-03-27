@@ -7,22 +7,22 @@ import (
 
 type Config struct {
 	Name    string
-	Digest  string
+	Content []string
 	Pattern string
 }
 
 type IOC struct {
-	name   string
-	digest string
-	regex  *regexp.Regexp
+	name    string
+	content []string
+	regex   *regexp.Regexp
 }
 
 var existingIOC = map[string]struct {
-	digest  string
+	content []string
 	pattern string
 }{
 	"tj-actions/changed-files": {
-		digest:  "0e58ed8671d6b60d0890c21b07f8835ace038e67",
+		content: []string{"SHA:0e58ed8671d6b60d0890c21b07f8835ace038e67"},
 		pattern: `(?:^|\s+)([A-Za-z0-9+/]{40,}={0,3})`,
 	},
 }
@@ -39,14 +39,14 @@ func GetPredefinedIOC(name string) (*IOC, bool) {
 	}
 
 	return &IOC{
-		name:   name,
-		digest: predefined.digest,
-		regex:  regex,
+		name:    name,
+		content: predefined.content,
+		regex:   regex,
 	}, true
 }
 
 func NewIOC(config *Config) (*IOC, error) {
-	if config.Name != "" && config.Digest == "" && config.Pattern == "" {
+	if config.Name != "" && len(config.Content) == 0 && config.Pattern == "" {
 		if ioc, exists := GetPredefinedIOC(config.Name); exists {
 			return ioc, nil
 		}
@@ -68,9 +68,9 @@ func NewIOC(config *Config) (*IOC, error) {
 	}
 
 	return &IOC{
-		name:   name,
-		digest: config.Digest,
-		regex:  regex,
+		name:    name,
+		content: config.Content,
+		regex:   regex,
 	}, nil
 }
 
@@ -78,8 +78,8 @@ func (i *IOC) GetName() string {
 	return i.name
 }
 
-func (i *IOC) GetDigest() string {
-	return i.digest
+func (i *IOC) GetContent() []string {
+	return i.content
 }
 
 func (i *IOC) GetRegex() *regexp.Regexp {

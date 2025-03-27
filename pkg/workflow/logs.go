@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -28,9 +30,10 @@ const (
 	timestampRegex string = `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+`
 )
 
-type Base64Finding struct {
-	Encoded string
-	Decoded string
+type Finding struct {
+	Encoded  string
+	Decoded  string
+	LineData string
 }
 
 func ExtractLogs(rc io.Reader) (string, error) {
@@ -193,58 +196,71 @@ func GetLogs(ctx context.Context, logger *clog.Logger, owner, repo string, runID
 	return resp.Body, nil
 }
 
-func ParseLogs(logger *clog.Logger, logData string, runID int64, findIOC *ioc.IOC) ([]Base64Finding, string, bool) {
+func ParseLogs(logger *clog.Logger, logData string, runID int64, findIOC *ioc.IOC) ([]Finding, bool) {
 	if findIOC == nil {
-		logger.Errorf("findIOC is nil, unable to scan logs")
-		return nil, "", false
+		logger.Errorf("provided IOC is nil, unable to scan logs")
+		return nil, false
 	}
 
 	scanner := bufio.NewScanner(strings.NewReader(logData))
-
 	regex := findIOC.GetRegex()
+	timestamp := regexp.MustCompile(timestampRegex)
+
+	lineMap := make(map[string]struct{})
+	encodedMap := make(map[string]struct{})
+	decodedMap := make(map[string]struct{})
 
 	lineNum := 0
-	var base64Findings []Base64Finding
-	var emptyLinesInfo string
-
-	hasCompromisedSHA := strings.Contains(logData, fmt.Sprintf("SHA:%s", findIOC.GetDigest()))
-	if hasCompromisedSHA {
-		logger.Warnf("Compromised SHA found in Run ID: %d", runID)
-	}
-
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineNum++
 
-		allMatches := regex.FindAllStringSubmatch(line, -1)
-		if len(allMatches) > 0 {
-			for _, ms := range allMatches {
-				if len(ms) > 1 {
-					m := ms[1]
-					decoded, err := tryBase64Decode(m)
-					if err == nil {
-						finding := Base64Finding{
-							Encoded: m,
-							Decoded: decoded,
-						}
-						base64Findings = append(base64Findings, finding)
-						logger.Warnf("Found valid base64 content at log line %d in Run ID: %d", lineNum, runID)
+		for _, content := range findIOC.GetContent() {
+			if strings.Contains(line, content) {
+				clean := timestamp.ReplaceAllString(line, "")
+				lineMap[clean] = struct{}{}
+				logger.Warnf("IOC log entry found in Run ID: %d", runID)
+			}
+		}
+
+		for _, match := range regex.FindAllStringSubmatch(line, -1) {
+			if len(match) > 1 {
+				encoded := match[1]
+				if decoded, err := tryBase64Decode(encoded); err == nil {
+					encodedMap[encoded] = struct{}{}
+					if secondDecoded, err := tryBase64Decode(decoded); err == nil {
+						decodedMap[secondDecoded] = struct{}{}
+						logger.Warnf("Found valid double base64-encoded content at log line %d in Run ID: %d", lineNum, runID)
+					} else {
+						decodedMap[decoded] = struct{}{}
+						logger.Infof("Found valid base64-encoded content at log line %d in Run ID: %d", lineNum, runID)
 					}
 				}
 			}
 		}
 	}
 
-	foundIssues := len(base64Findings) > 0
+	lineData := slices.Collect(maps.Keys(lineMap))
+	encodedData := slices.Collect(maps.Keys(encodedMap))
+	decodedData := slices.Collect(maps.Keys(decodedMap))
 
-	switch {
-	case len(base64Findings) > 0:
-		logger.Infof("Returning %d unique base64 findings in Run ID: %d", len(base64Findings), runID)
-	default:
+	finding := Finding{
+		Encoded:  strings.Join(encodedData, ","),
+		Decoded:  strings.Join(decodedData, ","),
+		LineData: strings.Join(lineData, ","),
+	}
+
+	findings := []Finding{finding}
+	foundIssues := len(findings) > 0
+
+	if foundIssues {
+		logger.Infof("Found issues in Run ID: %d (lineData: %d, encodedData: %d, decodedData: %d)",
+			runID, len(lineData), len(encodedData), len(decodedData))
+	} else {
 		logger.Infof("No issues found in Run ID: %d", runID)
 	}
 
-	return slices.Compact(base64Findings), emptyLinesInfo, foundIssues
+	return findings, foundIssues
 }
 
 func getUILogs(ctx context.Context, owner, repo string, runID int64) (map[int64]io.ReadCloser, error) {
@@ -508,12 +524,10 @@ func tryBase64Decode(s string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+
 	if !utf8.Valid(decoded) {
 		return "", fmt.Errorf("decoded content is not valid UTF8")
 	}
-	doubleDecoded, err := base64.StdEncoding.DecodeString(string(decoded))
-	if err != nil {
-		return "", err
-	}
-	return string(doubleDecoded), nil
+
+	return string(decoded), nil
 }

@@ -40,11 +40,15 @@ func writeCSV(filename string, results []tjscan.Result) error {
 		"WorkflowRunURL",
 		"Base64Data",
 		"DecodedData",
+		"LineData",
 	}); err != nil {
 		return err
 	}
 
 	for _, res := range results {
+		if res.IsEmpty() {
+			continue
+		}
 		record := []string{
 			res.Repository,
 			res.WorkflowFileName,
@@ -52,7 +56,7 @@ func writeCSV(filename string, results []tjscan.Result) error {
 			res.WorkflowRunURL,
 			res.Base64Data,
 			res.DecodedData,
-			res.EmptyLines,
+			res.LineData,
 		}
 		if err := writer.Write(record); err != nil {
 			return err

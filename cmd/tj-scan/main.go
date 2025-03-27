@@ -43,7 +43,7 @@ func main() {
 	startTimeFlag := flag.String("start", viper.GetString("start_time"), "Start time for workflow run filtering (RFC3339)")
 	endTimeFlag := flag.String("end", viper.GetString("end_time"), "End time for workflow run filtering (RFC3339)")
 	iocNameFlag := flag.String("ioc-name", viper.GetString("ioc.name"), "IOC Logs to scan for (e.g. tj-actions/changed-files")
-	iocDigestFlag := flag.String("ioc-digest", viper.GetString("ioc.digest"), "Malicious digest to search for in logs")
+	iocContentFlag := flag.String("ioc-content", viper.GetString("ioc.content"), "Comma-separated string(s) to search for in logs")
 	iocPatternFlag := flag.String("ioc-pattern", viper.GetString("ioc.pattern"), "Regex pattern to search logs with")
 	flag.Parse()
 
@@ -54,9 +54,23 @@ func main() {
 		logger.Fatal("GITHUB_TOKEN or -token must be provided")
 	}
 
+	contentParts := make([]string, 0)
+	if *iocContentFlag != "" {
+		for part := range strings.SplitSeq(*iocContentFlag, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				contentParts = append(contentParts, trimmed)
+			}
+		}
+
+		if len(contentParts) == 0 {
+			logger.Warn("ioc-content flag was provided but no valid content was parsed")
+		}
+	}
+
 	ic := &ioc.Config{
 		Name:    *iocNameFlag,
-		Digest:  *iocDigestFlag,
+		Content: contentParts,
 		Pattern: *iocPatternFlag,
 	}
 

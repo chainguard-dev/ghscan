@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -127,8 +128,8 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 				if err != nil {
 					return fmt.Errorf("error extracting logs for run %d: %v", runID, err)
 				}
-				base64Findings, emptyLines, found := wf.ParseLogs(logger, logText, runID, req.IOC)
-				if !found || len(base64Findings) == 0 {
+				wfFindings, found := wf.ParseLogs(logger, logText, runID, req.IOC)
+				if !found || len(wfFindings) == 0 {
 					return nil
 				}
 
@@ -138,22 +139,45 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 				workflowRunUIURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d",
 					req.Owner, req.RepoName, runID)
 
-				var findings []tjscan.Result
-				for _, finding := range base64Findings {
-					res := tjscan.Result{
-						Repository:       fmt.Sprintf("%s/%s", req.Owner, req.RepoName),
-						WorkflowFileName: wfFileName,
-						WorkflowURL:      workflowUIURL,
-						WorkflowRunURL:   workflowRunUIURL,
-						Base64Data:       finding.Encoded,
-						DecodedData:      finding.Decoded,
-						EmptyLines:       emptyLines,
+				resultsMap := make(map[string]*tjscan.Result)
+
+				for _, finding := range wfFindings {
+					if finding.Encoded == "" && finding.Decoded == "" && finding.LineData == "" {
+						continue
 					}
-					findings = append(findings, res)
+
+					key := workflowRunUIURL
+					if existing, exists := resultsMap[key]; exists {
+						if finding.LineData != "" {
+							existing.LineData = finding.LineData
+						}
+						if finding.Encoded != "" {
+							existing.Base64Data = finding.Encoded
+						}
+						if finding.Decoded != "" {
+							existing.DecodedData = finding.Decoded
+						}
+					} else {
+						res := tjscan.Result{
+							Repository:       fmt.Sprintf("%s/%s", req.Owner, req.RepoName),
+							WorkflowFileName: wfFileName,
+							WorkflowURL:      workflowUIURL,
+							WorkflowRunURL:   workflowRunUIURL,
+							Base64Data:       finding.Encoded,
+							DecodedData:      finding.Decoded,
+							LineData:         finding.LineData,
+						}
+						resultsMap[key] = &res
+					}
+				}
+
+				var findings []tjscan.Result
+				for _, result := range resultsMap {
+					findings = append(findings, *result)
 				}
 
 				resultsMu.Lock()
-				runResults = append(runResults, findings...)
+				runResults = append(runResults, slices.Compact(findings)...)
 				resultsMu.Unlock()
 
 				if len(req.Cache.Results)%10 == 0 {
