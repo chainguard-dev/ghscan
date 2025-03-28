@@ -1,5 +1,5 @@
-# tj-scan
-Scan GitHub Workflow logs for IOCs from the tj-actions/changed-files breach.
+# ghscan
+Scan GitHub Workflow logs for IOCs via strings or regex.
 
 Notes:
 - This script should not be seen as a universal detector of compromise; rather, a single result likely indicates that other Workflow runs in the search window were also compromised
@@ -63,7 +63,7 @@ permissions:
 
 For example:
 ```sh
-$ chainctl auth octo-sts --scope chainguard-dev/tj-scan --identity ephemerality -- go run cmd/tj-scan/main.go -target owner/repo -json="final.json" -csv="final.csv"
+$ chainctl auth octo-sts --scope chainguard-dev/ghscan --identity ephemerality -- go run cmd/ghscan/main.go -target owner/repo -json="final.json" -csv="final.csv"
 2025/03/18 11:27:59 INFO Found 1 repositories to scan
 2025/03/18 11:27:59 INFO No existing cache found at cache.json, starting fresh
 ```

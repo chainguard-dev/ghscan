@@ -1,4 +1,4 @@
-module github.com/chainguard-dev/tj-scan
+module github.com/chainguard-dev/ghscan
 
 go 1.24.1
 

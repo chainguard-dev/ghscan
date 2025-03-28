@@ -12,16 +12,16 @@ import (
 	"sync"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/chainguard-dev/tj-scan/pkg/file"
-	"github.com/chainguard-dev/tj-scan/pkg/request"
-	tjscan "github.com/chainguard-dev/tj-scan/pkg/tj-scan"
-	wf "github.com/chainguard-dev/tj-scan/pkg/workflow"
+	"github.com/chainguard-dev/ghscan/pkg/file"
+	ghscan "github.com/chainguard-dev/ghscan/pkg/ghscan"
+	"github.com/chainguard-dev/ghscan/pkg/request"
+	wf "github.com/chainguard-dev/ghscan/pkg/workflow"
 	"github.com/google/go-github/v69/github"
 	"github.com/spf13/viper"
 	"golang.org/x/sync/errgroup"
 )
 
-func scanWorkflows(ctx context.Context, logger *clog.Logger, req *tjscan.Request) error {
+func scanWorkflows(ctx context.Context, logger *clog.Logger, req *ghscan.Request) error {
 	g, gCtx := errgroup.WithContext(ctx)
 	g.SetLimit(2)
 
@@ -77,7 +77,7 @@ func scanWorkflows(ctx context.Context, logger *clog.Logger, req *tjscan.Request
 	return g.Wait()
 }
 
-func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, runs []*github.WorkflowRun, wfFileName, wfPath string) error {
+func scanRuns(ctx context.Context, logger *clog.Logger, req *ghscan.Request, runs []*github.WorkflowRun, wfFileName, wfPath string) error {
 	var rc io.ReadCloser
 	var resultsMu sync.Mutex
 
@@ -90,7 +90,7 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 
 	logger.Infof("Found %d runs for workflow %s in %s/%s", len(runs), wfFileName, req.Owner, req.RepoName)
 
-	var runResults []tjscan.Result
+	var runResults []ghscan.Result
 	for _, run := range runs {
 		g.Go(func() error {
 			select {
@@ -139,7 +139,7 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 				workflowRunUIURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d",
 					req.Owner, req.RepoName, runID)
 
-				resultsMap := make(map[string]*tjscan.Result)
+				resultsMap := make(map[string]*ghscan.Result)
 
 				for _, finding := range wfFindings {
 					if finding.Encoded == "" && finding.Decoded == "" && finding.LineData == "" {
@@ -158,7 +158,7 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 							existing.DecodedData = finding.Decoded
 						}
 					} else {
-						res := tjscan.Result{
+						res := ghscan.Result{
 							Repository:       fmt.Sprintf("%s/%s", req.Owner, req.RepoName),
 							WorkflowFileName: wfFileName,
 							WorkflowURL:      workflowUIURL,
@@ -171,7 +171,7 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 					}
 				}
 
-				var findings []tjscan.Result
+				var findings []ghscan.Result
 				for _, result := range resultsMap {
 					findings = append(findings, *result)
 				}
@@ -181,7 +181,7 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 				resultsMu.Unlock()
 
 				if len(req.Cache.Results)%10 == 0 {
-					file.WriteCache(logger, filepath.Join(tjscan.ResultsDir, req.CacheFile), req.Cache.Results)
+					file.WriteCache(logger, filepath.Join(ghscan.ResultsDir, req.CacheFile), req.Cache.Results)
 				}
 
 				return nil
@@ -197,7 +197,7 @@ func scanRuns(ctx context.Context, logger *clog.Logger, req *tjscan.Request, run
 	return nil
 }
 
-func Scan(ctx context.Context, logger *clog.Logger, req *tjscan.Request, repos []*github.Repository) error {
+func Scan(ctx context.Context, logger *clog.Logger, req *ghscan.Request, repos []*github.Repository) error {
 	if req == nil {
 		return fmt.Errorf("req cannot be nil")
 	}
