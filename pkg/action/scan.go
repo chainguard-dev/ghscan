@@ -13,8 +13,8 @@ import (
 
 	"github.com/chainguard-dev/clog"
 	"github.com/chainguard-dev/ghscan/pkg/file"
-	"github.com/chainguard-dev/ghscan/pkg/request"
 	ghscan "github.com/chainguard-dev/ghscan/pkg/ghscan"
+	"github.com/chainguard-dev/ghscan/pkg/request"
 	wf "github.com/chainguard-dev/ghscan/pkg/workflow"
 	"github.com/google/go-github/v69/github"
 	"github.com/spf13/viper"
