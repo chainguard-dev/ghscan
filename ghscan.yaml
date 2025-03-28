@@ -1,5 +1,5 @@
 package:
-  name: tjscan
+  name: ghscan
   version: "0.1.0"
   epoch: 1
   description: Scan Workflow logs for IOCs from the tj-actions/changed-files breach
@@ -16,23 +16,23 @@ environment:
 pipeline:
   - uses: git-checkout
     with:
-      repository: https://github.com/chainguard-dev/tj-scan
+      repository: https://github.com/chainguard-dev/ghscan
       expected-commit: bf0fb207b7f711d256ecb6463e645426a0e3db01
       tag: v${{package.version}}
 
   - uses: go/build
     with:
-      packages: ./cmd/tj-scan
-      output: tjscan
+      packages: ./cmd/ghscan
+      output: ghscan
 
 test:
   pipeline:
-    - name: Verify tj-scan version
+    - name: Verify ghscan version
       runs: |
-        tjscan -h
+        ghscan -h
 
 update:
   enabled: true
   github:
-    identifier: chainguard-dev/tj-scan
+    identifier: chainguard-dev/ghscan
     strip-prefix: v

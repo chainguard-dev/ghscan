@@ -1,20 +1,20 @@
-.PHONY: build docker fmt fmt-check test release sbom out/tjscan
+.PHONY: build docker fmt fmt-check test release sbom out/ghscan
 
-out/tjscan:
+out/ghscan:
 	mkdir -p out
-	go build -o out/tjscan ./cmd/tj-scan
+	go build -o out/ghscan ./cmd/ghscan
 
 keygen:
 	melange keygen
 
 melange: keygen
-	melange build --arch arm64,x86_64 tj-scan.yaml --signing-key melange.rsa
+	melange build --arch arm64,x86_64 ghscan.yaml --signing-key melange.rsa
 
 apko: melange
-	apko build tj-scan.apko.yaml tjscan:latest tjscan.tar
+	apko build ghscan.apko.yaml ghscan:latest ghscan.tar
 
-tj-scan-docker:
-	docker load < tjscan.tar
+ghscan-docker:
+	docker load < ghscan.tar
 
 sbom:
 	syft -o spdx-json . | jq . > sbom.json

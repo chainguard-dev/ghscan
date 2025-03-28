@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 
 	"github.com/chainguard-dev/clog"
-	tjscan "github.com/chainguard-dev/tj-scan/pkg/tj-scan"
+	ghscan "github.com/chainguard-dev/ghscan/pkg/ghscan"
 )
 
-func LoadCache(logger *clog.Logger, cacheFile string, cleanCache bool) tjscan.Cache {
-	var cache tjscan.Cache
+func LoadCache(logger *clog.Logger, cacheFile string, cleanCache bool) ghscan.Cache {
+	var cache ghscan.Cache
 
-	cf := filepath.Clean(filepath.Join(filepath.Clean(tjscan.ResultsDir), filepath.Clean(cacheFile)))
+	cf := filepath.Clean(filepath.Join(filepath.Clean(ghscan.ResultsDir), filepath.Clean(cacheFile)))
 	data, err := os.ReadFile(cf)
 	if err != nil || cleanCache {
 		logger.Infof("No existing cache found at %s, starting fresh", cacheFile)
@@ -22,7 +22,7 @@ func LoadCache(logger *clog.Logger, cacheFile string, cleanCache bool) tjscan.Ca
 	err = json.Unmarshal(data, &cache)
 	if err != nil {
 		logger.Warnf("Error parsing existing cache file: %v, starting fresh", err)
-		return tjscan.Cache{}
+		return ghscan.Cache{}
 	}
 
 	logger.Infof("Loaded %d existing results from cache", len(cache.Results))

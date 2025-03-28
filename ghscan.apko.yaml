@@ -4,10 +4,10 @@ contents:
   keyring:
     - melange.rsa.pub
   packages:
-    - tjscan@local
+    - ghscan@local
 
 entrypoint:
-  command: tjscan
+  command: ghscan
 
 accounts:
   groups:

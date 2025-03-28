@@ -1,9 +1,9 @@
-package tjscan
+package ghscan
 
 import (
 	"time"
 
-	"github.com/chainguard-dev/tj-scan/pkg/ioc"
+	"github.com/chainguard-dev/ghscan/pkg/ioc"
 	"github.com/google/go-github/v69/github"
 )
 

@@ -8,10 +8,10 @@ import (
 	"path/filepath"
 
 	"github.com/chainguard-dev/clog"
-	tjscan "github.com/chainguard-dev/tj-scan/pkg/tj-scan"
+	ghscan "github.com/chainguard-dev/ghscan/pkg/ghscan"
 )
 
-func writeCSV(filename string, results []tjscan.Result) error {
+func writeCSV(filename string, results []ghscan.Result) error {
 	clean := filepath.Clean(filename)
 	fileInfo, err := os.Stat(clean)
 	if err == nil && fileInfo.IsDir() {
@@ -65,7 +65,7 @@ func writeCSV(filename string, results []tjscan.Result) error {
 	return nil
 }
 
-func WriteCache(logger *clog.Logger, cacheFile string, results []tjscan.Result) {
+func WriteCache(logger *clog.Logger, cacheFile string, results []ghscan.Result) {
 	clean := filepath.Clean(cacheFile)
 	dir := filepath.Dir(clean)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -73,7 +73,7 @@ func WriteCache(logger *clog.Logger, cacheFile string, results []tjscan.Result) 
 		return
 	}
 
-	cache := tjscan.Cache{Results: results}
+	cache := ghscan.Cache{Results: results}
 	cacheData, err := json.MarshalIndent(cache, "", "  ")
 	if err != nil {
 		logger.Errorf("Error marshaling intermediate results: %v", err)
@@ -93,8 +93,8 @@ func WriteCache(logger *clog.Logger, cacheFile string, results []tjscan.Result) 
 	logger.Infof("Wrote intermediate results with %d entries", len(results))
 }
 
-func WriteResults(logger *clog.Logger, cache tjscan.Cache, cacheFile, jsonFile, csvFile string) {
-	err := os.MkdirAll(tjscan.ResultsDir, 0o750)
+func WriteResults(logger *clog.Logger, cache ghscan.Cache, cacheFile, jsonFile, csvFile string) {
+	err := os.MkdirAll(ghscan.ResultsDir, 0o750)
 	if err != nil {
 		logger.Fatalf("Error creating results directory: %v", err)
 	}
@@ -104,19 +104,19 @@ func WriteResults(logger *clog.Logger, cache tjscan.Cache, cacheFile, jsonFile, 
 	}
 
 	if cacheFile != "" {
-		if err = os.WriteFile(filepath.Join(tjscan.ResultsDir, cacheFile), cacheData, 0o600); err != nil {
+		if err = os.WriteFile(filepath.Join(ghscan.ResultsDir, cacheFile), cacheData, 0o600); err != nil {
 			logger.Fatalf("Error writing cache file: %v", err)
 		}
 	}
 
 	if jsonFile != "" {
-		if err = os.WriteFile(filepath.Join(tjscan.ResultsDir, jsonFile), cacheData, 0o600); err != nil {
+		if err = os.WriteFile(filepath.Join(ghscan.ResultsDir, jsonFile), cacheData, 0o600); err != nil {
 			logger.Fatalf("Error writing JSON output: %v", err)
 		}
 	}
 
 	if csvFile != "" {
-		if err = writeCSV(filepath.Join(tjscan.ResultsDir, csvFile), cache.Results); err != nil {
+		if err = writeCSV(filepath.Join(ghscan.ResultsDir, csvFile), cache.Results); err != nil {
 			logger.Fatalf("Error writing CSV output: %v", err)
 		}
 	}

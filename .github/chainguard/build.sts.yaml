@@ -1,7 +1,7 @@
 issuer: https://token.actions.githubusercontent.com
-subject_pattern: repo:chainguard-dev\/tj-scan:(ref:refs\/heads\/main|pull_request)
+subject_pattern: repo:chainguard-dev/ghscan:(ref:refs/heads/main|pull_request)
 claim_pattern:
-  job_workflow_ref: chainguard-dev/tj-scan/.github/workflows/build.yaml@.*
+  job_workflow_ref: chainguard-dev/ghscan/.github/workflows/build.yaml@.*
 
 permissions:
   contents: read

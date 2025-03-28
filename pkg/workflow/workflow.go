@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/chainguard-dev/tj-scan/pkg/request"
+	"github.com/chainguard-dev/ghscan/pkg/request"
 	"github.com/google/go-github/v69/github"
 )
 

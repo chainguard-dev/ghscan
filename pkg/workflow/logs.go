@@ -20,7 +20,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/chainguard-dev/clog"
-	"github.com/chainguard-dev/tj-scan/pkg/ioc"
+	"github.com/chainguard-dev/ghscan/pkg/ioc"
 )
 
 const (

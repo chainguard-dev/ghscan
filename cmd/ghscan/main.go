@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/chainguard-dev/clog"
-	"github.com/chainguard-dev/tj-scan/pkg/action"
-	"github.com/chainguard-dev/tj-scan/pkg/file"
-	"github.com/chainguard-dev/tj-scan/pkg/ioc"
-	tjscan "github.com/chainguard-dev/tj-scan/pkg/tj-scan"
+	"github.com/chainguard-dev/ghscan/pkg/action"
+	"github.com/chainguard-dev/ghscan/pkg/file"
+	"github.com/chainguard-dev/ghscan/pkg/ioc"
+	ghscan "github.com/chainguard-dev/ghscan/pkg/ghscan"
 	"github.com/google/go-github/v69/github"
 	"github.com/spf13/viper"
 	"golang.org/x/oauth2"
@@ -145,7 +145,7 @@ func main() {
 		cachedResults[key] = true
 	}
 
-	req := tjscan.Request{
+	req := ghscan.Request{
 		Cache:         cache,
 		CacheFile:     *cacheFileFlag,
 		CachedResults: cachedResults,
@@ -161,7 +161,7 @@ func main() {
 		logger.Errorf("Failed to scan Workflows in repos: %v", err)
 	}
 
-	cr := tjscan.Cache{Results: req.Cache.Results}
+	cr := ghscan.Cache{Results: req.Cache.Results}
 	file.WriteResults(logger, cr, *cacheFileFlag, *jsonOutputFlag, *csvOutputFlag)
 	logger.Info("Processing complete")
 }

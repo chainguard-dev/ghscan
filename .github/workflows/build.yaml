@@ -37,5 +37,5 @@ jobs:
       - name: build
         run: |
           set -x
-          make out/tjscan
-          ./out/tjscan -h
+          make out/ghscan
+          ./out/ghscan -h
