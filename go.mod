@@ -4,7 +4,7 @@ go 1.24.1
 
 require (
 	github.com/PuerkitoBio/goquery v1.10.3
-	github.com/cenkalti/backoff/v5 v5.0.2
+	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/chainguard-dev/clog v1.7.0
 	github.com/google/go-github/v69 v69.2.0
 	github.com/spf13/viper v1.20.1
