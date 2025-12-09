@@ -8,8 +8,8 @@ require (
 	github.com/chainguard-dev/clog v1.7.0
 	github.com/google/go-github/v69 v69.2.0
 	github.com/spf13/viper v1.21.0
-	golang.org/x/oauth2 v0.33.0
-	golang.org/x/sync v0.18.0
+	golang.org/x/oauth2 v0.34.0
+	golang.org/x/sync v0.19.0
 )
 
 require (
