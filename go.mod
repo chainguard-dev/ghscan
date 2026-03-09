@@ -1,6 +1,6 @@
 module github.com/chainguard-dev/ghscan
 
-go 1.24.4
+go 1.25.0
 
 require (
 	github.com/PuerkitoBio/goquery v1.11.0
@@ -8,8 +8,8 @@ require (
 	github.com/chainguard-dev/clog v1.8.0
 	github.com/google/go-github/v69 v69.2.0
 	github.com/spf13/viper v1.21.0
-	golang.org/x/oauth2 v0.35.0
-	golang.org/x/sync v0.19.0
+	golang.org/x/oauth2 v0.36.0
+	golang.org/x/sync v0.20.0
 )
 
 require (
