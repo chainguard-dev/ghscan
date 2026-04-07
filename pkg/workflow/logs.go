@@ -643,7 +643,7 @@ func combineLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
 
 	for _, jobID := range jobIDs {
 		logs := logsMap[jobID]
-		combinedBuilder.WriteString(fmt.Sprintf("===== JOB ID: %d =====\n", jobID))
+		fmt.Fprintf(&combinedBuilder, "===== JOB ID: %d =====\n", jobID)
 
 		logContent, err := io.ReadAll(logs)
 		if err != nil {
