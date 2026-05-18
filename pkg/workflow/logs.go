@@ -6,67 +6,94 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
-	"time"
+	"sync"
 	"unicode/utf8"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/chainguard-dev/clog"
+	httpclient "github.com/chainguard-dev/ghscan/pkg/httpclient"
 	"github.com/chainguard-dev/ghscan/pkg/ioc"
+	"github.com/google/go-github/v86/github"
+	"golang.org/x/sync/errgroup"
 )
+
+// ErrNoJobsForRun marks runs that GitHub lists but expose no per-job
+// logs (cancelled runs and reusable-workflow callee shells are the
+// common producers). Callers should treat this as a terminal skip for
+// the run rather than a transient fetch failure. The sentinel is
+// internal to the per-job fetch path; the public no-logs signal is
+// ErrRunHasNoLogs below.
+var ErrNoJobsForRun = errors.New("workflow: run has no jobs")
+
+// ErrRunHasNoLogs signals that a workflow run has no log content to
+// scan. Callers should treat it as a terminal skip rather than a
+// fetch failure, and must use errors.Is to detect it -- the signal is
+// out of band so attacker-controllable log content cannot trigger an
+// inadvertent skip.
+var ErrRunHasNoLogs = errors.New("workflow: run has no logs to scan")
+
+// timestampRE strips the leading RFC3339-like prefix that GitHub
+// prepends to every log line. Compiled once at init so per-line scans
+// pay zero regex build cost.
+var timestampRE = regexp.MustCompile(timestampRegex)
 
 const (
 	cancelled      string = "cancelled"
-	header         string = "Mozilla/5.0 (compatible; IOCScanner/1.0)"
 	timestampRegex string = `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+`
+	// runLogsMaxRedirects bounds redirect follows when GitHub points the
+	// run-level logs endpoint at a signed objects.githubusercontent.com
+	// URL. httpclient.redirectGuard separately enforces the host
+	// allowlist, so this only protects against a malicious chain that
+	// would still resolve to allowed hosts.
+	runLogsMaxRedirects = 5
+	// jobLogsMaxRedirects mirrors runLogsMaxRedirects for the per-job
+	// fallback path.
+	jobLogsMaxRedirects = 5
+	// perJobFanOutLimit caps the number of concurrent per-job log
+	// downloads when GetLogs falls back to the per-job endpoint.
+	// Mirrors internal/action.fanOutLimit; chosen well below GitHub's
+	// documented 100-request secondary concurrency limit.
+	perJobFanOutLimit = 32
 )
 
-var selectors = []string{
-	".js-build-log pre",
-	".js-job-log-content pre",
-	".js-log-output pre",
-	".log-body pre",
-	".log-body-container pre",
-	"div.job-log-container pre",
-	"div[data-test-selector='job-log'] pre",
-	"pre.js-file-line-container",
-	"pre.logs",
-}
-
 type Finding struct {
-	Encoded  string
-	Decoded  string
-	LineData string
+	Encoded           string   `json:"encoded,omitempty"`
+	Decoded           string   `json:"decoded,omitempty"`
+	LineData          string   `json:"line_data,omitempty"`
+	WorkflowFileSHA   string   `json:"workflow_file_sha,omitempty"`
+	OffendingUsesLine string   `json:"offending_uses_line,omitempty"`
+	ResolvedRefForm   string   `json:"resolved_ref_form,omitempty"`
+	JobName           string   `json:"job_name,omitempty"`
+	StepName          string   `json:"step_name,omitempty"`
+	ReachableSecrets  []string `json:"reachable_secrets,omitempty"`
 }
 
 func ExtractLogs(rc io.Reader) (string, error) {
 	data, err := io.ReadAll(rc)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read logs: %w", err)
 	}
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("open zip: %w", err)
 	}
 	var logsBuilder strings.Builder
 	for _, file := range zr.File {
 		err = func() error {
 			f, err := file.Open()
 			if err != nil {
-				return err
+				return fmt.Errorf("open zip member: %w", err)
 			}
+			defer func() { _ = f.Close() }()
 			b, err := io.ReadAll(f)
-			defer f.Close()
 			if err != nil {
-				return err
+				return fmt.Errorf("read zip member: %w", err)
 			}
 			logsBuilder.Write(b)
 			logsBuilder.WriteString("\n")
@@ -79,132 +106,108 @@ func ExtractLogs(rc io.Reader) (string, error) {
 	return logsBuilder.String(), nil
 }
 
-func GetLogs(ctx context.Context, logger *clog.Logger, owner, repo string, runID int64, token string) (io.ReadCloser, error) {
-	runStatusURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d", owner, repo, runID)
-	statusReq, err := http.NewRequestWithContext(ctx, "GET", runStatusURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating run status request: %w", err)
+// GetLogs fetches the workflow run log archive. When the run-level logs
+// endpoint returns 404/410 (typical after the 30-day archive window or
+// for cancelled runs), it falls back to the per-job logs API exposed by
+// go-github's [github.ActionsService.ListWorkflowJobs] and
+// [github.ActionsService.GetWorkflowJobLogs]. The prior HTML-scraping
+// fallback was deleted in favor of these REST endpoints. The shared
+// hc carries retry, ETag caching, rate limiting and the redirect
+// allowlist for the log payload itself; gh handles all REST envelopes
+// (status, listing, redirect resolution).
+//
+// token is used on raw log download requests (signed
+// objects.githubusercontent.com URLs may not embed credentials). It
+// is not consulted on REST envelope calls because gh is expected to
+// carry its own authentication.
+func GetLogs(ctx context.Context, logger *clog.Logger, hc *httpclient.Client, gh *github.Client, owner, repo string, runID int64, token string) (io.ReadCloser, error) {
+	if hc == nil {
+		return nil, fmt.Errorf("httpclient must not be nil")
 	}
-	statusReq.Header.Set("Authorization", "token "+token)
-	statusReq.Header.Set("Accept", "application/vnd.github.v3+json")
-
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
+	if gh == nil {
+		return nil, fmt.Errorf("github client must not be nil")
 	}
 
-	statusResp, err := httpClient.Do(statusReq)
+	run, _, err := gh.Actions.GetWorkflowRunByID(ctx, owner, repo, runID)
 	if err != nil {
 		return nil, fmt.Errorf("fetching run status: %w", err)
 	}
-	defer statusResp.Body.Close()
 
-	if statusResp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to get run status: status %d", statusResp.StatusCode)
+	status := run.GetStatus()
+	conclusion := run.GetConclusion()
+	if status == cancelled || conclusion == cancelled {
+		// For cancelled runs we proactively check job count; if there
+		// are no jobs the per-job fallback can't help us either.
+		jobCount, err := countJobs(ctx, gh, owner, repo, runID)
+		if err == nil && jobCount == 0 {
+			logger.Infof("Run %d was canceled with no jobs, skipping log retrieval", runID)
+			return nil, fmt.Errorf("run %d: %w", runID, ErrRunHasNoLogs)
+		}
 	}
 
-	var runInfo struct {
-		Status     string `json:"status"`
-		Conclusion string `json:"conclusion"`
-		Jobs       struct {
-			TotalCount int `json:"total_count"`
-		} `json:"jobs"`
-	}
+	logURL, resp, err := gh.Actions.GetWorkflowRunLogs(ctx, owner, repo, runID, runLogsMaxRedirects)
+	switch {
+	case err == nil && logURL != nil:
+		body, err := fetchRawLogs(ctx, hc, logURL.String(), token)
+		if err != nil {
+			return nil, err
+		}
+		return io.NopCloser(bytes.NewReader(body)), nil
 
-	if err := json.NewDecoder(statusResp.Body).Decode(&runInfo); err != nil {
-		return nil, fmt.Errorf("parsing run status: %w", err)
-	}
+	case resp != nil && (resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone):
+		logger.Warnf("Logs API returned %d for run %d; falling back to per-job logs API", resp.StatusCode, runID)
+		return fallbackPerJobLogs(ctx, logger, hc, gh, owner, repo, runID, token, status, conclusion)
 
-	if (runInfo.Status == cancelled || runInfo.Conclusion == cancelled) && runInfo.Jobs.TotalCount == 0 {
-		logger.Infof("Run %d was canceled with no jobs, skipping log retrieval", runID)
-		return io.NopCloser(strings.NewReader(fmt.Sprintf("Run %d was canceled with no jobs", runID))), nil
+	default:
+		if resp != nil && resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound {
+			if status == cancelled || conclusion == cancelled {
+				logger.Infof("Run %d was canceled, no job logs found in API response", runID)
+				return nil, fmt.Errorf("run %d: %w", runID, ErrRunHasNoLogs)
+			}
+			return nil, fmt.Errorf("failed to download logs: status %d", resp.StatusCode)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("executing logs request: %w", err)
+		}
+		return nil, fmt.Errorf("logs API returned no URL and no error")
 	}
+}
 
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d/logs", owner, repo, runID)
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+func fallbackPerJobLogs(
+	ctx context.Context,
+	logger *clog.Logger,
+	hc *httpclient.Client,
+	gh *github.Client,
+	owner, repo string,
+	runID int64,
+	token, status, conclusion string,
+) (io.ReadCloser, error) {
+	jobLogs, err := getPerJobLogs(ctx, hc, gh, owner, repo, runID, token)
 	if err != nil {
-		return nil, fmt.Errorf("creating API request: %w", err)
+		if errors.Is(err, ErrNoJobsForRun) {
+			if status == cancelled || conclusion == cancelled {
+				logger.Infof("Run %d was canceled with no jobs; skipping", runID)
+			} else {
+				logger.Warnf("Run %d has no jobs; skipping (likely reusable-workflow callee or empty run)", runID)
+			}
+			return nil, fmt.Errorf("run %d: %w", runID, ErrRunHasNoLogs)
+		}
+		return nil, fmt.Errorf("fetching per-job logs: %w", err)
 	}
-	req.Header.Set("Authorization", "token "+token)
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
 
-	resp, err := httpClient.Do(req)
+	if len(jobLogs) == 0 {
+		if status == cancelled || conclusion == cancelled {
+			logger.Infof("Run %d was canceled with no jobs; skipping", runID)
+			return nil, fmt.Errorf("run %d: %w", runID, ErrRunHasNoLogs)
+		}
+		return nil, fmt.Errorf("no per-job logs returned")
+	}
+
+	combinedLogs, err := combineLogs(jobLogs)
 	if err != nil {
-		return nil, fmt.Errorf("executing API request: %w", err)
+		return nil, fmt.Errorf("combining logs: %w", err)
 	}
-
-	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-		logger.Warnf("Logs API returned %d for run %d; falling back to UI", resp.StatusCode, runID)
-		defer resp.Body.Close()
-
-		jobLogs, err := getUILogs(ctx, owner, repo, runID)
-		if err != nil {
-			if strings.Contains(err.Error(), "no job IDs found") &&
-				(runInfo.Status == cancelled || runInfo.Conclusion == cancelled) {
-				logger.Infof("Run %d was canceled, no job logs found", runID)
-				return io.NopCloser(strings.NewReader(fmt.Sprintf("Run %d was canceled, no job logs available", runID))), nil
-			}
-			return nil, fmt.Errorf("crawling UI logs: %w", err)
-		}
-
-		if len(jobLogs) == 0 {
-			if runInfo.Status == cancelled || runInfo.Conclusion == cancelled {
-				logger.Infof("Run %d was canceled, no job logs found", runID)
-				return io.NopCloser(strings.NewReader(fmt.Sprintf("Run %d was canceled, no job logs available", runID))), nil
-			}
-			return nil, fmt.Errorf("no job logs found via UI")
-		}
-
-		combinedLogs, err := combineLogs(jobLogs)
-		if err != nil {
-			return nil, fmt.Errorf("combining logs: %w", err)
-		}
-
-		return combinedLogs, nil
-	}
-
-	if resp.StatusCode == http.StatusFound {
-		loc := resp.Header.Get("Location")
-		if loc == "" {
-			defer resp.Body.Close()
-			return nil, fmt.Errorf("redirect location empty")
-		}
-		defer resp.Body.Close()
-
-		redirectReq, err := http.NewRequestWithContext(ctx, "GET", loc, nil)
-		if err != nil {
-			return nil, fmt.Errorf("creating redirect request: %w", err)
-		}
-
-		redirectResp, err := httpClient.Do(redirectReq)
-		if err != nil {
-			return nil, fmt.Errorf("following redirect: %w", err)
-		}
-
-		if redirectResp.StatusCode != http.StatusOK {
-			defer redirectResp.Body.Close()
-			if runInfo.Status == cancelled || runInfo.Conclusion == cancelled {
-				logger.Infof("Run %d was canceled, no job logs found at redirect", runID)
-				return io.NopCloser(strings.NewReader(fmt.Sprintf("Run %d was canceled, no job logs available", runID))), nil
-			}
-
-			return nil, fmt.Errorf("failed to download logs from redirect: status %d", redirectResp.StatusCode)
-		}
-
-		return redirectResp.Body, nil
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-
-		if runInfo.Status == cancelled || runInfo.Conclusion == cancelled {
-			logger.Infof("Run %d was canceled, no job logs found in API response", runID)
-			return io.NopCloser(strings.NewReader(fmt.Sprintf("Run %d was canceled, no job logs available", runID))), nil
-		}
-
-		return nil, fmt.Errorf("failed to download logs: status %d", resp.StatusCode)
-	}
-
-	return resp.Body, nil
+	return combinedLogs, nil
 }
 
 func ParseLogs(logger *clog.Logger, logData string, runID int64, findIOC *ioc.IOC) ([]Finding, bool) {
@@ -215,18 +218,17 @@ func ParseLogs(logger *clog.Logger, logData string, runID int64, findIOC *ioc.IO
 
 	scanner := bufio.NewScanner(strings.NewReader(logData))
 	regex := findIOC.GetRegex()
-	timestamp := regexp.MustCompile(timestampRegex)
 
-	lineMap := make(map[string]struct{})
-	encodedMap := make(map[string]struct{})
-	decodedMap := make(map[string]struct{})
+	lineMap := make(map[string]struct{}, 16)
+	encodedMap := make(map[string]struct{}, 16)
+	decodedMap := make(map[string]struct{}, 16)
 
 	lineNum := 0
 	for scanner.Scan() {
 		line := scanner.Text()
 		lineNum++
 
-		lineMap = findMatch(line, findIOC, timestamp, lineMap, logger, runID)
+		lineMap = findMatch(line, findIOC, timestampRE, lineMap, logger, runID)
 
 		if regex == nil {
 			continue
@@ -235,14 +237,10 @@ func ParseLogs(logger *clog.Logger, logData string, runID int64, findIOC *ioc.IO
 		encodedMap, decodedMap = processMatch(line, regex, lineNum, encodedMap, decodedMap, logger, runID)
 	}
 
-	lineData := slices.Collect(maps.Keys(lineMap))
-	encodedData := slices.Collect(maps.Keys(encodedMap))
-	decodedData := slices.Collect(maps.Keys(decodedMap))
-
 	finding := Finding{
-		Encoded:  strings.Join(encodedData, ","),
-		Decoded:  strings.Join(decodedData, ","),
-		LineData: strings.Join(lineData, ","),
+		Encoded:  strings.Join(setToSlice(encodedMap), ","),
+		Decoded:  strings.Join(setToSlice(decodedMap), ","),
+		LineData: strings.Join(setToSlice(lineMap), ","),
 	}
 
 	findings := []Finding{finding}
@@ -250,16 +248,36 @@ func ParseLogs(logger *clog.Logger, logData string, runID int64, findIOC *ioc.IO
 	return findings, foundIssues
 }
 
-func findMatch(line string, findIOC *ioc.IOC, timestamp *regexp.Regexp, lineMap map[string]struct{}, logger *clog.Logger, runID int64) map[string]struct{} {
-	for _, content := range findIOC.GetContent() {
-		if !strings.Contains(line, content) {
-			continue
-		}
-
-		clean := timestamp.ReplaceAllString(line, "")
-		lineMap[clean] = struct{}{}
-		logger.Warnf("IOC log entry found in Run ID: %d", runID)
+// setToSlice flattens a set into a slice via a single pass with the
+// final capacity known up-front. Avoids the two-pass collect/copy that
+// slices.Collect(maps.Keys(...)) performs.
+func setToSlice(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
+	return out
+}
+
+func findMatch(line string, findIOC *ioc.IOC, timestamp *regexp.Regexp, lineMap map[string]struct{}, logger *clog.Logger, runID int64) map[string]struct{} {
+	if len(findIOC.GetContent()) == 0 {
+		return lineMap
+	}
+
+	// The IOC carries a precomputed bloom-prefiltered Matcher built once
+	// at construction. The bloom prefilter rejects lines that contain no
+	// n-gram from any IOC -- the common case for log scanning at
+	// internet scale -- without invoking the deterministic backend. The
+	// string-input variant skips the []byte(line) conversion that the
+	// generic Match() entrypoint would otherwise force.
+	matcher := findIOC.GetMatcher()
+	if matcher == nil || !matcher.MatchAnyString(line) {
+		return lineMap
+	}
+
+	clean := timestamp.ReplaceAllString(line, "")
+	lineMap[clean] = struct{}{}
+	logger.Warnf("IOC log entry found in Run ID: %d", runID)
 
 	return lineMap
 }
@@ -296,340 +314,149 @@ func handleDecoded(decoded string, lineNum int, decodedMap map[string]struct{}, 
 	return decodedMap
 }
 
-func getUILogs(ctx context.Context, owner, repo string, runID int64) (map[int64]io.ReadCloser, error) {
-	doc, err := fetchRunPage(ctx, owner, repo, runID)
-	if err != nil {
-		return nil, err
-	}
-
-	jobIDs := getJobIDs(doc, runID)
-	if len(jobIDs) == 0 {
-		return nil, fmt.Errorf("no job IDs found in run page")
-	}
-
-	return fetchJobLogs(ctx, owner, repo, runID, jobIDs)
-}
-
-func fetchRunPage(ctx context.Context, owner, repo string, runID int64) (*goquery.Document, error) {
-	runURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d", owner, repo, runID)
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, runURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating run page request: %w", err)
-	}
-
-	req.Header.Set("User-Agent", header)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetching run page: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to retrieve run page, status code: %d", resp.StatusCode)
-	}
-
-	return goquery.NewDocumentFromReader(resp.Body)
-}
-
-func getJobIDs(doc *goquery.Document, runID int64) map[int64]string {
-	jobIDs := make(map[int64]string)
-
-	getJobByLink(doc, runID, jobIDs)
-
-	if len(jobIDs) == 0 {
-		getJobByAttr(doc, jobIDs)
-	}
-
-	return jobIDs
-}
-
-func getJobByLink(doc *goquery.Document, runID int64, jobIDs map[int64]string) {
-	patterns := []string{
-		fmt.Sprintf("/actions/runs/%d/job/", runID),
-		fmt.Sprintf("/actions/runs/%d/jobs/", runID),
-		"/job/",
-		"/jobs/",
-	}
-
-	doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
-		href, exists := s.Attr("href")
-		if !exists {
-			return
-		}
-
-		for _, pattern := range patterns {
-			if !strings.Contains(href, pattern) {
-				continue
-			}
-
-			parts := strings.Split(href, pattern)
-			if len(parts) < 2 {
-				continue
-			}
-
-			jobIDStr := strings.Split(parts[1], "/")[0]
-			jobID, err := strconv.ParseInt(jobIDStr, 10, 64)
-			if err != nil || jobID <= 0 {
-				continue
-			}
-
-			jobName := getJobName(s, jobID)
-			jobIDs[jobID] = jobName
-		}
+// countJobs returns the total number of jobs in a workflow run. It is
+// used as a sanity check on the cancelled-run fast path.
+func countJobs(ctx context.Context, gh *github.Client, owner, repo string, runID int64) (int, error) {
+	res, _, err := gh.Actions.ListWorkflowJobs(ctx, owner, repo, runID, &github.ListWorkflowJobsOptions{
+		ListOptions: github.ListOptions{PerPage: 1},
 	})
+	if err != nil {
+		return 0, err
+	}
+	if res == nil {
+		return 0, nil
+	}
+	return res.GetTotalCount(), nil
 }
 
-func getJobByAttr(doc *goquery.Document, jobIDs map[int64]string) {
-	doc.Find("div[data-job-id], div[data-job], div.job").Each(func(_ int, s *goquery.Selection) {
-		jobIDStr := getJobByElement(s)
+// getPerJobLogs enumerates all jobs in a workflow run via the GitHub
+// REST API and downloads each job's plain-text logs via the redirect
+// URL returned by the per-job logs endpoint. The returned map is keyed
+// by job ID so combineLogs produces deterministic output ordered by
+// numeric job ID.
+//
+// Per-job downloads run concurrently capped at perJobFanOutLimit so
+// runs with many jobs amortize GitHub's API round-trip latency without
+// exceeding the documented secondary rate-limit budget.
+func getPerJobLogs(ctx context.Context, hc *httpclient.Client, gh *github.Client, owner, repo string, runID int64, token string) (map[int64]io.ReadCloser, error) {
+	jobs, err := listAllJobs(ctx, gh, owner, repo, runID)
+	if err != nil {
+		return nil, fmt.Errorf("listing jobs: %w", err)
+	}
+	if len(jobs) == 0 {
+		return nil, fmt.Errorf("run %d: %w", runID, ErrNoJobsForRun)
+	}
 
-		if jobIDStr == "" {
-			jobIDStr = getJobByNestedElement(s)
+	var (
+		mu           sync.Mutex
+		results      = make(map[int64]io.ReadCloser, len(jobs))
+		fetchErrors  []string
+		recordResult = func(id int64, body []byte) {
+			mu.Lock()
+			results[id] = io.NopCloser(bytes.NewReader(body))
+			mu.Unlock()
+		}
+		recordError = func(format string, args ...any) {
+			mu.Lock()
+			fetchErrors = append(fetchErrors, fmt.Sprintf(format, args...))
+			mu.Unlock()
+		}
+	)
+
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(perJobFanOutLimit)
+
+	for _, job := range jobs {
+		jobID := job.GetID()
+		if jobID == 0 {
+			continue
 		}
 
-		if jobIDStr == "" {
-			return
-		}
-
-		jobID, err := strconv.ParseInt(jobIDStr, 10, 64)
-		if err != nil || jobID <= 0 {
-			return
-		}
-
-		jobName := s.Find("h3, h4, .job-name").First().Text()
-		jobName = strings.TrimSpace(jobName)
+		jobName := job.GetName()
 		if jobName == "" {
 			jobName = fmt.Sprintf("Job-%d", jobID)
 		}
 
-		jobIDs[jobID] = jobName
-	})
-}
+		g.Go(func() error {
+			select {
+			case <-gCtx.Done():
+				return gCtx.Err()
+			default:
+			}
 
-func getJobByElement(s *goquery.Selection) string {
-	if jobIDStr, exists := s.Attr("data-job-id"); exists {
-		return jobIDStr
-	}
-	if jobIDStr, exists := s.Attr("data-job"); exists {
-		return jobIDStr
-	}
-	return ""
-}
+			logURL, _, err := gh.Actions.GetWorkflowJobLogs(gCtx, owner, repo, jobID, jobLogsMaxRedirects)
+			if err != nil {
+				recordError("job %s (ID: %d) get-url: %v", jobName, jobID, err)
+				return nil
+			}
+			if logURL == nil {
+				recordError("job %s (ID: %d): empty log URL", jobName, jobID)
+				return nil
+			}
 
-func getJobByNestedElement(s *goquery.Selection) string {
-	var jobIDStr string
-
-	s.Find("[data-job-id], [data-job]").Each(func(_ int, nested *goquery.Selection) {
-		if jobIDStr != "" {
-			return
-		}
-
-		if idStr, hasAttr := nested.Attr("data-job-id"); hasAttr {
-			jobIDStr = idStr
-		} else if idStr, hasAttr := nested.Attr("data-job"); hasAttr {
-			jobIDStr = idStr
-		}
-	})
-
-	return jobIDStr
-}
-
-func getJobName(s *goquery.Selection, jobID int64) string {
-	jobName := strings.TrimSpace(s.Text())
-
-	if jobName == "" {
-		jobName = strings.TrimSpace(s.ParentsFiltered("div.job").Find("h3").Text())
+			body, err := fetchRawLogs(gCtx, hc, logURL.String(), token)
+			if err != nil {
+				recordError("job %s (ID: %d) fetch: %v", jobName, jobID, err)
+				return nil
+			}
+			recordResult(jobID, body)
+			return nil
+		})
 	}
 
-	if jobName == "" {
-		jobName = fmt.Sprintf("Job-%d", jobID)
-	}
-
-	return jobName
-}
-
-func fetchJobLogs(ctx context.Context, owner, repo string, runID int64, jobIDs map[int64]string) (map[int64]io.ReadCloser, error) {
-	results := make(map[int64]io.ReadCloser)
-	var fetchErrors []string
-	client := &http.Client{Timeout: 30 * time.Second}
-
-	for jobID, jobName := range jobIDs {
-		log, err := scanUI(ctx, client, owner, repo, runID, jobID)
-		if err != nil {
-			fetchErrors = append(fetchErrors, fmt.Sprintf("job %s (ID: %d): %v", jobName, jobID, err))
-			continue
-		}
-		results[jobID] = log
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("per-job log fetch interrupted: %w", err)
 	}
 
 	if len(results) == 0 && len(fetchErrors) > 0 {
 		return nil, fmt.Errorf("failed to fetch any job logs: %s", strings.Join(fetchErrors, "; "))
 	}
-
 	if len(fetchErrors) > 0 {
-		fmt.Printf("Warning: failed to fetch some job logs: %s\n", strings.Join(fetchErrors, "; "))
+		clog.WarnContextf(ctx, "failed to fetch some job logs: %s", strings.Join(fetchErrors, "; "))
 	}
 
 	return results, nil
 }
 
-func scanUI(ctx context.Context, client *http.Client, owner, repo string, runID, jobID int64) (io.ReadCloser, error) {
-	doc, err := fetchJobPage(ctx, client, owner, repo, runID, jobID)
-	if err != nil {
-		return nil, err
-	}
-
-	logs, found := getLogsBySelector(doc)
-	if !found {
-		logs, found = getLogsByTag(doc)
-	}
-
-	if !found {
-		logs, err := getLogData(ctx, client, doc)
-		if err == nil {
-			return logs, nil
-		}
-	}
-
-	if logs == "" {
-		return nil, fmt.Errorf("no logs found for job ID %d", jobID)
-	}
-
-	return io.NopCloser(strings.NewReader(logs)), nil
+// listAllJobs iterates ListWorkflowJobs across every page so the caller
+// observes every job for the run. PerPage is set to the API maximum of
+// 100 to minimize round trips on large fan-out workflows. The page
+// count is capped to bound a misbehaving server.
+func listAllJobs(ctx context.Context, gh *github.Client, owner, repo string, runID int64) ([]*github.WorkflowJob, error) {
+	return listAllJobsPaginated(ctx, gh, owner, repo, runID, maxWorkflowListPages)
 }
 
-func fetchJobPage(ctx context.Context, client *http.Client, owner, repo string, runID, jobID int64) (*goquery.Document, error) {
-	jobURL := fmt.Sprintf("https://github.com/%s/%s/actions/runs/%d/job/%d", owner, repo, runID, jobID)
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, jobURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating job page request: %w", err)
-	}
-
-	req.Header.Set("User-Agent", header)
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetching job page: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to retrieve job page, status code: %d", resp.StatusCode)
-	}
-
-	return goquery.NewDocumentFromReader(resp.Body)
-}
-
-func getLogsBySelector(doc *goquery.Document) (string, bool) {
-	var logsBuilder strings.Builder
-	found := false
-
-	for _, selector := range selectors {
-		selections := doc.Find(selector)
-		if selections.Length() == 0 {
-			continue
-		}
-
-		selections.Each(func(_ int, s *goquery.Selection) {
-			logsBuilder.WriteString(s.Text())
-			logsBuilder.WriteString("\n")
-		})
-		found = true
-		break
-	}
-
-	return logsBuilder.String(), found
-}
-
-func getLogsByTag(doc *goquery.Document) (string, bool) {
-	var logsBuilder strings.Builder
-	found := false
-
-	doc.Find("pre").Each(func(_ int, s *goquery.Selection) {
-		text := s.Text()
-		if len(text) <= 100 && !strings.Contains(text, "Starting job") {
-			return
-		}
-
-		logsBuilder.WriteString(text)
-		logsBuilder.WriteString("\n")
-		found = true
-	})
-
-	return logsBuilder.String(), found
-}
-
-func getLogData(ctx context.Context, client *http.Client, doc *goquery.Document) (io.ReadCloser, error) {
-	rawLogURL := findLogURL(doc)
-	if rawLogURL == "" {
-		return nil, fmt.Errorf("raw log URL not found")
-	}
-
-	if !strings.HasPrefix(rawLogURL, "http") {
-		rawLogURL = "https://github.com" + rawLogURL
-	}
-
-	return fetchLogs(ctx, client, rawLogURL)
-}
-
-func findLogURL(doc *goquery.Document) string {
-	var rawLogURL string
-
-	doc.Find("a[href]").Each(func(_ int, s *goquery.Selection) {
-		if rawLogURL != "" {
-			return
-		}
-
-		href, exists := s.Attr("href")
-		if !exists {
-			return
-		}
-
-		text := s.Text()
-		if strings.Contains(text, "Download log") ||
-			strings.Contains(text, "Raw log") ||
-			strings.Contains(href, "logs") ||
-			strings.Contains(href, "raw") {
-			rawLogURL = href
-		}
-	})
-
-	return rawLogURL
-}
-
-func fetchLogs(ctx context.Context, client *http.Client, rawLogURL string) (io.ReadCloser, error) {
+// fetchRawLogs downloads the plain-text log payload pointed at by the
+// signed URL returned by the run-level or per-job logs endpoint. The
+// shared httpclient enforces redirect allowlisting and body capping;
+// the token is forwarded as a GitHub bearer in case the URL does not
+// already carry credentials in the query string.
+func fetchRawLogs(ctx context.Context, hc *httpclient.Client, rawLogURL, token string) ([]byte, error) {
 	rawReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawLogURL, nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("creating raw logs request: %w", err)
+	}
+	if token != "" {
+		rawReq.Header.Set("Authorization", "token "+token)
 	}
 
-	rawReq.Header.Set("User-Agent", header)
-	rawResp, err := client.Do(rawReq)
+	body, rawResp, err := hc.DoWithRetry(ctx, rawReq) //nolint:bodyclose // httpclient drains body and reassigns to http.NoBody.
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetching raw logs: %w", err)
+	}
+	if rawResp == nil {
+		return nil, fmt.Errorf("fetching raw logs: nil response")
 	}
 
 	if rawResp.StatusCode != http.StatusOK {
-		rawResp.Body.Close()
 		return nil, fmt.Errorf("failed to retrieve raw logs, status code: %d", rawResp.StatusCode)
 	}
 
-	var buffer bytes.Buffer
-	_, err = buffer.ReadFrom(rawResp.Body)
-	rawResp.Body.Close()
-	if err != nil {
-		return nil, fmt.Errorf("reading raw logs: %w", err)
-	}
-
-	if buffer.Len() == 0 {
+	if len(body) == 0 {
 		return nil, fmt.Errorf("empty raw logs")
 	}
 
-	return io.NopCloser(bytes.NewReader(buffer.Bytes())), nil
+	return body, nil
 }
 
 func combineLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
@@ -643,6 +470,9 @@ func combineLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
 
 	for _, jobID := range jobIDs {
 		logs := logsMap[jobID]
+		if logs == nil {
+			continue
+		}
 		fmt.Fprintf(&combinedBuilder, "===== JOB ID: %d =====\n", jobID)
 
 		logContent, err := io.ReadAll(logs)
@@ -651,7 +481,7 @@ func combineLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
 		}
 		err = logs.Close()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("closing logs for job %d: %w", jobID, err)
 		}
 
 		combinedBuilder.Write(logContent)
@@ -664,7 +494,7 @@ func combineLogs(logsMap map[int64]io.ReadCloser) (io.ReadCloser, error) {
 func tryBase64Decode(s string) (string, error) {
 	decoded, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("base64 decode: %w", err)
 	}
 
 	if !utf8.Valid(decoded) {

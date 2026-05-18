@@ -3,54 +3,85 @@ package ioc
 import (
 	"fmt"
 	"regexp"
+	"sync"
 )
 
 type Config struct {
 	Name    string
 	Content []string
 	Pattern string
+	// Corpus, when non-nil, overrides the embedded corpus used to
+	// resolve Name. Callers wire this from cmd/ghscan when the
+	// operator supplied --ioc-file.
+	Corpus *Corpus
 }
 
 type IOC struct {
 	name    string
 	content []string
 	regex   *regexp.Regexp
+	matcher Matcher
 }
 
-var existingIOC = map[string]struct {
-	content []string
-	pattern string
-}{
-	"tj-actions/changed-files": {
-		content: []string{"SHA:0e58ed8671d6b60d0890c21b07f8835ace038e67"},
-		pattern: `(?:^|\s+)([A-Za-z0-9+/]{40,}={0,3})`,
-	},
+// embeddedCorpusOnce memoizes the parsed embedded corpus so repeated
+// GetPredefinedIOC calls do not reparse the JSON. Errors are returned
+// to the caller verbatim on every call.
+var (
+	embeddedCorpusOnce sync.Once
+	embeddedCorpusVal  *Corpus
+	errEmbeddedCorpus  error
+)
+
+func getEmbeddedCorpus() (*Corpus, error) {
+	embeddedCorpusOnce.Do(func() {
+		embeddedCorpusVal, errEmbeddedCorpus = LoadEmbeddedCorpus()
+	})
+	return embeddedCorpusVal, errEmbeddedCorpus
 }
 
+// GetPredefinedIOC resolves an IOC by action name from the embedded
+// corpus. It exists so external callers (and the legacy CLI path) can
+// look up a known indicator without supplying a Config.
 func GetPredefinedIOC(name string) (*IOC, bool) {
-	predefined, exists := existingIOC[name]
-	if !exists {
+	c, err := getEmbeddedCorpus()
+	if err != nil || c == nil {
 		return nil, false
 	}
-
-	regex, err := regexp.Compile(predefined.pattern)
+	entry := c.FindEntry(name)
+	if entry == nil {
+		return nil, false
+	}
+	built, err := entry.BuildIOC()
 	if err != nil {
 		return nil, false
 	}
-
-	return &IOC{
-		name:    name,
-		content: predefined.content,
-		regex:   regex,
-	}, true
+	return built, true
 }
 
+// NewIOC constructs an IOC from a Config. When Config.Name is set and
+// no inline content/pattern is provided, it resolves against the
+// corpus on Config.Corpus when present, falling back to the embedded
+// corpus otherwise.
 func NewIOC(config *Config) (*IOC, error) {
 	if config.Name != "" && len(config.Content) == 0 && config.Pattern == "" {
-		if ioc, exists := GetPredefinedIOC(config.Name); exists {
-			return ioc, nil
+		var (
+			entry *CorpusEntry
+			src   = config.Corpus
+		)
+		if src != nil {
+			entry = src.FindEntry(config.Name)
 		}
-		return nil, fmt.Errorf("predefined IOC not found: %s", config.Name)
+		if entry == nil {
+			c, err := getEmbeddedCorpus()
+			if err != nil {
+				return nil, fmt.Errorf("loading embedded corpus: %w", err)
+			}
+			entry = c.FindEntry(config.Name)
+		}
+		if entry == nil {
+			return nil, fmt.Errorf("predefined IOC not found: %s", config.Name)
+		}
+		return entry.BuildIOC()
 	}
 
 	if config.Pattern == "" && len(config.Content) == 0 {
@@ -71,10 +102,24 @@ func NewIOC(config *Config) (*IOC, error) {
 		name = "custom"
 	}
 
+	normalized := make([]string, 0, len(config.Content))
+	for _, s := range config.Content {
+		if s == "" {
+			continue
+		}
+		normalized = append(normalized, normalizeMatchInput(s))
+	}
+
+	matcher, err := NewMatcher(normalized)
+	if err != nil {
+		return nil, fmt.Errorf("building IOC matcher: %w", err)
+	}
+
 	return &IOC{
 		name:    name,
-		content: config.Content,
+		content: normalized,
 		regex:   regex,
+		matcher: matcher,
 	}, nil
 }
 
@@ -88,4 +133,11 @@ func (i *IOC) GetContent() []string {
 
 func (i *IOC) GetRegex() *regexp.Regexp {
 	return i.regex
+}
+
+// GetMatcher returns the precomputed bloom-prefiltered substring matcher
+// over the IOC's content list. The Matcher is constructed once at IOC
+// creation and is safe for concurrent reads at the per-line scan site.
+func (i *IOC) GetMatcher() Matcher {
+	return i.matcher
 }
