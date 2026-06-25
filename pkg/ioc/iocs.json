@@ -1,0 +1,271 @@
+{
+  "version": 1,
+  "iocs": [
+    {
+      "action": "tj-actions/changed-files",
+      "refs": [
+        "0e58ed8671d6b60d0890c21b07f8835ace038e67",
+        "0e58ED8671D6B60D0890C21B07F8835ACE038E67"
+      ],
+      "tags": [
+        "v35",
+        "v36",
+        "v37",
+        "v38",
+        "v39",
+        "v40",
+        "v41",
+        "v42",
+        "v43",
+        "v44",
+        "v45",
+        "v46"
+      ],
+      "case_insensitive": true,
+      "incident": "March 2025 supply chain compromise; malicious commit replaced multiple tagged versions to dump secrets via base64 in workflow logs. The upstream repository carries 379 historical tags spanning v1 through v47; the GHSA-mrrh-fwg8-r2c3 advisory names only the major-version floating tags (v35-v46) and three specific retroactively-updated references (v1.0.0, v35.7.7-sec, v44.5.1) as definitively compromised. Per-point-release enumeration is intentionally omitted: the malicious commit was reachable via the major-version floating tags during the exposure window, and any pinned point release within v1-v45.0.7 should be re-verified against its commit SHA rather than the tag name. Coverage is capped at the 12 floating-major tags because exhaustive enumeration of the 379-tag history exceeds the corpus design budget (per-entry cap of 200) without adding detection value.",
+      "disclosure_date": "2025-03-14",
+      "references": [
+        "https://github.com/advisories/GHSA-mrrh-fwg8-r2c3",
+        "https://nvd.nist.gov/vuln/detail/CVE-2025-30066",
+        "https://www.cisa.gov/news-events/alerts/2025/03/18/supply-chain-compromise-third-party-github-action-cve-2025-30066",
+        "https://github.com/tj-actions/changed-files/issues/2463"
+      ],
+      "verification_status": "confirmed"
+    },
+    {
+      "action": "reviewdog/action-setup",
+      "refs": [
+        "f0d342d24037a44a4e9408a44cd0fd49bfdcdc25",
+        "F0D342D24037A44A4E9408A44CD0FD49BFDCDC25"
+      ],
+      "tags": [
+        "v1"
+      ],
+      "case_insensitive": true,
+      "incident": "March 2025 supply chain compromise; only the floating tag v1 was force-pushed to a malicious commit that exfiltrated runner secrets via workflow logs between 18:42 and 20:31 UTC on 2025-03-11. The 21 pinned point-release tags upstream (v1.0, v1.0.0 through v1.5.0) were not retagged and remain at their original SHAs; per GHSA-qmg3-hpqr-gqvc, v1 is the sole compromised reference. Downstream actions reviewdog/action-shellcheck, action-staticcheck, action-composite-template, action-ast-grep, and action-typos all inherit the compromise via their dependency on action-setup@v1.",
+      "disclosure_date": "2025-03-11",
+      "references": [
+        "https://github.com/advisories/GHSA-qmg3-hpqr-gqvc",
+        "https://nvd.nist.gov/vuln/detail/CVE-2025-30154",
+        "https://www.cisa.gov/news-events/alerts/2025/03/18/supply-chain-compromise-third-party-github-action-cve-2025-30066",
+        "https://github.com/reviewdog/reviewdog/issues/2079"
+      ],
+      "verification_status": "confirmed"
+    },
+    {
+      "action": "ctrf-io/github-actions-test-reporter",
+      "refs": [],
+      "tags": [
+        "v1"
+      ],
+      "case_insensitive": true,
+      "incident": "Reported as part of broader 2025 GitHub Actions supply-chain disclosures; treat tag v1 as suspect until pinned to a vetted SHA. No primary-source advisory has been located, so this entry should be re-evaluated once one surfaces.",
+      "disclosure_date": "2025-03-15",
+      "references": [
+        "https://github.com/ctrf-io/github-test-reporter"
+      ],
+      "verification_status": "needs_confirmation"
+    },
+    {
+      "action": "aquasecurity/trivy-action",
+      "refs": [
+        "f77738448eec70113cf711656914b61905b3bd47",
+        "f4f1785be270ae13f36f6a8cfbf6faaae50e660a",
+        "85cb72f1e8ee5e6e44488cd6cbdbca94722f96ed",
+        "ddb94181dcbc723d96ffc07fddd14d97e4849016",
+        "ad623e14ebdfe82b9627811d57b9a39e283d6128",
+        "19851bef764b57ff95b35e66589f31949eeb229d",
+        "ab6606b76e5a054be08cab3d07da323e90e751e8",
+        "ddb9da4475c1cef7d5389062bdfdfbdbd1394648"
+      ],
+      "tags": [
+        "v0.0.1",
+        "v0.0.2",
+        "v0.0.3",
+        "v0.0.4",
+        "v0.0.5",
+        "v0.0.6",
+        "v0.0.7",
+        "v0.0.8",
+        "v0.0.9",
+        "v0.0.10",
+        "v0.0.11",
+        "v0.0.12",
+        "v0.0.13",
+        "v0.0.14",
+        "v0.0.15",
+        "v0.0.16",
+        "v0.0.17",
+        "v0.0.18",
+        "v0.0.19",
+        "v0.0.20",
+        "v0.0.21",
+        "v0.0.22",
+        "v0.1.0",
+        "v0.2.0",
+        "v0.2.1",
+        "v0.2.2",
+        "v0.2.3",
+        "v0.2.4",
+        "v0.2.5",
+        "v0.3.0",
+        "v0.4.0",
+        "v0.4.1",
+        "v0.5.0",
+        "v0.5.1",
+        "v0.6.0",
+        "v0.6.1",
+        "v0.6.2",
+        "v0.7.0",
+        "v0.7.1",
+        "v0.8.0",
+        "v0.9.0",
+        "v0.9.1",
+        "v0.9.2",
+        "v0.10.0",
+        "v0.11.0",
+        "v0.11.1",
+        "v0.11.2",
+        "v0.12.0",
+        "v0.13.0",
+        "v0.13.1",
+        "v0.14.0",
+        "v0.15.0",
+        "v0.16.0",
+        "v0.16.1",
+        "v0.17.0",
+        "v0.18.0",
+        "v0.19.0",
+        "v0.20.0",
+        "v0.21.0",
+        "v0.22.0",
+        "v0.23.0",
+        "v0.24.0",
+        "v0.25.0",
+        "v0.26.0",
+        "v0.27.0",
+        "v0.28.0",
+        "v0.29.0",
+        "v0.30.0",
+        "v0.31.0",
+        "v0.32.0",
+        "v0.33.0",
+        "v0.33.1",
+        "v0.34.0",
+        "v0.34.1",
+        "v0.34.2"
+      ],
+      "case_insensitive": true,
+      "incident": "March 2026 TeamPCP supply chain compromise; attacker force-pushed 76 of 77 version tags (range v0.0.1 through v0.34.2) to malicious commits that injected a credential stealer into entrypoint.sh. Exposure window for trivy-action ran from ~17:43 UTC 2026-03-19 to ~05:40 UTC 2026-03-20. Tag v0.35.0 was the sole untouched tag and was the first protected by GitHub's immutable-releases feature; v0.36.0 is a post-remediation safe release. 75 of the 76 compromised tags are enumerated below; the 76th could not be identified from primary sources (upstream restored 73 of the 76 to clean commits; v0.0.10, v0.34.1, and v0.34.2 remain unrestored at the time of writing). All listed tags must be treated as malicious regardless of current upstream state.",
+      "disclosure_date": "2026-03-20",
+      "references": [
+        "https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23",
+        "https://www.aquasec.com/blog/trivy-supply-chain-attack-what-you-need-to-know/",
+        "https://www.microsoft.com/en-us/security/blog/2026/03/24/detecting-investigating-defending-against-trivy-supply-chain-compromise/",
+        "https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack",
+        "https://www.crowdstrike.com/en-us/blog/from-scanner-to-stealer-inside-the-trivy-action-supply-chain-compromise/"
+      ],
+      "verification_status": "confirmed"
+    },
+    {
+      "action": "aquasecurity/setup-trivy",
+      "refs": [
+        "8afa9b9f9183b4e00c46e2b82d34047e3c177bd0",
+        "386c0f18ac3d7f2ed33e2d884761119f4024ff8a",
+        "384add36b52014a0f99c0ab3a3d58bd47e53d00f",
+        "7a4b6f31edb8db48cc22a1d41e298b38c4a6417e",
+        "6d8d730153d6151e03549f276faca0275ed9c7b2",
+        "99b93c070aac11b52dfc3e41a55cbb24a331ae75",
+        "f4436225d8a5fd1715d3c2290d8a50643e726031"
+      ],
+      "tags": [
+        "v0.2.0",
+        "v0.2.1",
+        "v0.2.2",
+        "v0.2.3",
+        "v0.2.4",
+        "v0.2.5",
+        "v0.2.6"
+      ],
+      "case_insensitive": true,
+      "incident": "March 2026 TeamPCP supply chain compromise; all 7 existing tags (v0.2.0 through v0.2.6) were force-pushed to malicious commits that injected a credential stealer as a 'Setup environment' step. Exposure window ran from ~17:43 UTC to ~21:44 UTC on 2026-03-19. Companion compromise to aquasecurity/trivy-action.",
+      "disclosure_date": "2026-03-20",
+      "references": [
+        "https://github.com/aquasecurity/trivy/security/advisories/GHSA-69fq-xp46-6x23",
+        "https://www.aquasec.com/blog/trivy-supply-chain-attack-what-you-need-to-know/",
+        "https://www.wiz.io/blog/trivy-compromised-teampcp-supply-chain-attack"
+      ],
+      "verification_status": "confirmed"
+    },
+    {
+      "action": "Checkmarx/kics-github-action",
+      "refs": [
+        "0e22ec8d1e0dda3c62bf4beffcd4a8a5db1abda1",
+        "45f3749467a6017cb4fb749054b498d149dd5924",
+        "8e20c7a67bb95632e2040327a355fb97e6014d29"
+      ],
+      "tags": [
+        "v1",
+        "v1.0",
+        "v1.1",
+        "v1.2",
+        "v1.3",
+        "v1.4",
+        "v1.5",
+        "v1.6",
+        "v1.6.1",
+        "v1.6.2",
+        "v1.6.3",
+        "v1.7.0",
+        "v2",
+        "v2.0.0",
+        "v2.1.0",
+        "v2.1.1",
+        "v2.1.2",
+        "v2.1.3",
+        "v2.1.4",
+        "v2.1.5",
+        "v2.1.6",
+        "v2.1.7",
+        "v2.1.8",
+        "v2.1.9",
+        "v2.1.10",
+        "v2.1.11",
+        "v2.1.12",
+        "v2.1.13",
+        "v2.1.14",
+        "v2.1.15",
+        "v2.1.16",
+        "v2.1.17",
+        "v2.1.18",
+        "v2.1.19",
+        "v2.1.20"
+      ],
+      "case_insensitive": true,
+      "incident": "March 2026 TeamPCP supply chain compromise; all 35 Git tags enumerated below were redirected to malicious commits that injected a credential stealer into setup.sh, performing CI/CD runner memory dumps and exfiltrating to checkmarx.zone. Attack window ran from 12:58 to 16:50 UTC on 2026-03-23. The cx-plugins-releases service account (GitHub ID 225848595) was the publishing identity. SHAs listed are the leading examples published by the Wiz advisory.",
+      "disclosure_date": "2026-03-23",
+      "references": [
+        "https://github.com/Checkmarx/kics-github-action/issues/152",
+        "https://checkmarx.com/blog/checkmarx-security-update/",
+        "https://www.wiz.io/blog/teampcp-attack-kics-github-action",
+        "https://www.stepsecurity.io/blog/checkmarx-kics-github-action-compromised-malware-injected-in-all-git-tags"
+      ],
+      "verification_status": "confirmed"
+    },
+    {
+      "action": "Checkmarx/ast-github-action",
+      "refs": [],
+      "tags": [
+        "2.3.28"
+      ],
+      "case_insensitive": true,
+      "incident": "March 2026 TeamPCP supply chain compromise; only tag 2.3.28 has been directly observed as malicious, but TeamPCP's broader pattern (Trivy, KICS) was to retag the full set. Treat any non-pinned reference as suspect until Checkmarx publishes a complete tag inventory.",
+      "disclosure_date": "2026-03-23",
+      "references": [
+        "https://checkmarx.com/blog/checkmarx-security-update/",
+        "https://www.wiz.io/blog/teampcp-attack-kics-github-action"
+      ],
+      "verification_status": "needs_confirmation"
+    }
+  ]
+}
