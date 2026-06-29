@@ -5,7 +5,7 @@ go 1.26
 require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/chainguard-dev/clog v1.8.0
+	github.com/chainguard-dev/clog v1.8.1
 	github.com/cloudflare/ahocorasick v0.0.0-20240916140611-054963ec9396
 	github.com/google/go-github/v86 v86.0.0
 	github.com/hashicorp/golang-lru/v2 v2.0.7
