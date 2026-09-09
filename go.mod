@@ -1,6 +1,6 @@
 module github.com/chainguard-dev/ghscan
 
-go 1.26
+go 1.26.0
 
 require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1
@@ -11,10 +11,10 @@ require (
 	github.com/hashicorp/golang-lru/v2 v2.0.7
 	github.com/spf13/viper v1.21.0
 	go.uber.org/goleak v1.3.0
-	golang.org/x/oauth2 v0.36.0
-	golang.org/x/sync v0.21.0
-	golang.org/x/text v0.39.0
-	golang.org/x/time v0.15.0
+	golang.org/x/oauth2 v0.37.0
+	golang.org/x/sync v0.23.0
+	golang.org/x/text v0.41.0
+	golang.org/x/time v0.16.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
