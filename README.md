@@ -11,7 +11,7 @@ Notes:
 
 ## Requirements
 
-- [chainctl](https://edu.chainguard.dev/chainguard/administration/how-to-install-chainctl) installed to handle ephemeral authentication
+- [chainctl](https://www.chainguard.dev/docs/platform/chainctl-usage/how-to-install-chainctl) installed to handle ephemeral authentication
 
 ## Example `octo-sts` trust policy
 
