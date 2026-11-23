@@ -3,7 +3,7 @@ module github.com/chainguard-dev/ghscan
 go 1.26.0
 
 require (
-	github.com/bits-and-blooms/bloom/v3 v3.7.1
+	github.com/bits-and-blooms/bloom/v3 v3.7.2
 	github.com/cenkalti/backoff/v5 v5.0.3
 	github.com/chainguard-dev/clog v1.8.1
 	github.com/cloudflare/ahocorasick v0.0.0-20240916140611-054963ec9396
@@ -19,7 +19,7 @@ require (
 )
 
 require (
-	github.com/bits-and-blooms/bitset v1.24.2 // indirect
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.4.0 // indirect
 	github.com/google/go-querystring v1.2.0 // indirect
